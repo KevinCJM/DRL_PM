@@ -1,0 +1,10 @@
+experiment:
+  type: pca_ablation
+feature_reduction:
+  pca:
+    enabled: false
+output:
+  run_name: pca_ablation
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

@@ -1,0 +1,10 @@
+experiment:
+  type: reward_ablation
+reward_ablation:
+  enabled: true
+  variant: A2_net_log_return_after_cost
+output:
+  run_name: rewards
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

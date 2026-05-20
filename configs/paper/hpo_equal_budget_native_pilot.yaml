@@ -1,0 +1,82 @@
+experiment:
+  type: hyperparameter_sweep
+env:
+  window_size: 20
+feature_matrix:
+  input_matrix_id: M0
+  window_size: 20
+feature_reduction:
+  pca:
+    enabled: false
+model:
+  latent_dim: 64
+hpo:
+  enabled: true
+  equal_budget_across_models: true
+  native_only: true
+  n_trials_per_model: 3
+  metric: validation_sharpe_minus_drawdown_turnover_penalty
+  objective: validation_sharpe_minus_drawdown_turnover_penalty
+  direction: maximize
+  selection_split: validation
+  final_report_split: test
+  trainable_models:
+    - ppo_dqn_hierarchical_reimplementation
+    - hybrid_dqn_optimizer_equal_weight
+    - hybrid_dqn_optimizer_markowitz_mean_variance
+    - hybrid_dqn_optimizer_minimum_variance
+    - hybrid_dqn_optimizer_sharpe_maximization
+    - hybrid_dqn_optimizer_risk_parity
+  search_space:
+    ppo_lr:
+      type: float
+      low: 0.0001
+      high: 0.001
+      log: true
+    dqn_lr:
+      type: float
+      low: 0.0001
+      high: 0.001
+      log: true
+baselines:
+  native_rl:
+    enabled_models:
+      - ppo_dqn_hierarchical_reimplementation
+      - hybrid_dqn_optimizer_equal_weight
+      - hybrid_dqn_optimizer_markowitz_mean_variance
+      - hybrid_dqn_optimizer_minimum_variance
+      - hybrid_dqn_optimizer_sharpe_maximization
+      - hybrid_dqn_optimizer_risk_parity
+    epochs: 2
+    max_train_steps: 128
+    max_validation_steps: 128
+    max_gradient_updates_per_epoch: 16
+hybrid_dqn_optimizer:
+  lookback_window: 252
+  min_observations: 60
+  covariance_shrinkage: 0.1
+  risk_free_rate: 0.0
+  lambda_risk: 1.0
+  markowitz_optimizer_maxiter: 200
+  risk_parity_optimizer_maxiter: 300
+dqn:
+  batch_size: 16
+  warmup_steps: 16
+  target_update_interval: 16
+  use_prioritized_replay: false
+  per_enabled: false
+training:
+  epochs: 2
+  max_train_steps: 128
+  max_validation_steps: 128
+  checkpoint_include_replay_buffer: false
+statistics:
+  primary_metric: sharpe
+reproducibility:
+  seed: 42
+  seeds: [42]
+output:
+  run_name: P7_hpo_equal_budget_native_pilot
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

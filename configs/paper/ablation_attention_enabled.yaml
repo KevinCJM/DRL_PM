@@ -1,0 +1,13 @@
+experiment:
+  type: ablation
+model:
+  encoder:
+    cross_asset_attention:
+      enabled: true
+training:
+  checkpoint_include_replay_buffer: false
+output:
+  run_name: P3_attention_enabled
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

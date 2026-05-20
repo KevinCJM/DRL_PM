@@ -1,0 +1,17 @@
+experiment:
+  type: baseline_comparison
+baselines:
+  enabled: true
+  native_rl:
+    enabled_models:
+      - ppo_dqn_hierarchical_reimplementation
+      - hybrid_dqn_optimizer_reimplementation
+    epochs: 1
+    max_train_steps: 128
+    max_validation_steps: 128
+    max_gradient_updates_per_epoch: 16
+output:
+  run_name: baselines
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

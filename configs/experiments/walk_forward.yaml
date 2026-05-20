@@ -1,0 +1,9 @@
+experiment:
+  type: walk_forward
+split:
+  mode: walk_forward
+output:
+  run_name: walk_forward
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

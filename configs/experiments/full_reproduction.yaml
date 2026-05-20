@@ -1,0 +1,13 @@
+experiment:
+  type: full_reproduction
+full_reproduction:
+  resume_completed_children: true
+hpo:
+  equal_budget_across_models: false
+  n_trials: 3
+  n_trials_per_model: 3
+output:
+  run_name: full_reproduction
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

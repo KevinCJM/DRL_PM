@@ -1,0 +1,9 @@
+experiment:
+  type: distributional_cvar_analysis
+distributional_cvar:
+  enabled: true
+output:
+  run_name: distributional_cvar_analysis
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

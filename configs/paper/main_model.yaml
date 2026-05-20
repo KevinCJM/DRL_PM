@@ -1,0 +1,17 @@
+experiment:
+  type: main_model
+training:
+  epochs: 20
+  checkpoint_include_replay_buffer: false
+hpo:
+  enabled: false
+statistics:
+  primary_metric: sharpe
+reproducibility:
+  seed: 42
+  seeds: [42, 123, 2024, 3407, 9999]
+output:
+  run_name: P1_main_model_fixed
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

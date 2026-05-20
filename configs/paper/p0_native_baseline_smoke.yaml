@@ -1,0 +1,34 @@
+experiment:
+  type: baseline_comparison
+baselines:
+  enabled: true
+  traditional:
+    - equal_weight
+  deep: []
+  native_rl:
+    enabled_models:
+      - ppo_dqn_hierarchical_reimplementation
+      - hybrid_dqn_optimizer_reimplementation
+    epochs: 1
+    max_train_steps: 128
+    max_validation_steps: 128
+    max_gradient_updates_per_epoch: 16
+dqn:
+  batch_size: 16
+  warmup_steps: 16
+  target_update_interval: 16
+  use_prioritized_replay: false
+  per_enabled: false
+training:
+  epochs: 1
+  checkpoint_include_replay_buffer: false
+hpo:
+  enabled: false
+reproducibility:
+  seed: 42
+  seeds: [42]
+output:
+  run_name: P0_native_baseline_smoke
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

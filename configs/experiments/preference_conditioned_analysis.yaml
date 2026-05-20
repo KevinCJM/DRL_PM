@@ -1,0 +1,9 @@
+experiment:
+  type: preference_conditioned_analysis
+preference:
+  enabled: true
+output:
+  run_name: preference_conditioned_analysis
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

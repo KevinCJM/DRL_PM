@@ -1,0 +1,9 @@
+experiment:
+  type: asset_universe_sensitivity
+data:
+  strict_common_history_mode: false
+output:
+  run_name: asset_universe_sensitivity
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

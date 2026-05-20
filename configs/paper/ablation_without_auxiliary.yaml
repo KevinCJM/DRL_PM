@@ -1,0 +1,11 @@
+experiment:
+  type: ablation
+auxiliary:
+  enabled: false
+training:
+  checkpoint_include_replay_buffer: false
+output:
+  run_name: P3_without_auxiliary
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

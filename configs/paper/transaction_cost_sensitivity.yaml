@@ -1,0 +1,12 @@
+experiment:
+  type: transaction_cost_sensitivity
+reproducibility:
+  seed: 42
+  seeds: [42, 123, 2024, 3407, 9999]
+training:
+  checkpoint_include_replay_buffer: false
+output:
+  run_name: P5_transaction_cost
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

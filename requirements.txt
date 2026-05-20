@@ -1,0 +1,13 @@
+torch
+gymnasium
+scikit-learn
+PyYAML
+pandas
+numpy
+pyarrow
+scipy
+statsmodels
+matplotlib
+seaborn
+optuna
+pytest

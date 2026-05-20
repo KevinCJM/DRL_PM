@@ -1,0 +1,13 @@
+experiment:
+  type: ablation
+model:
+  default_encoder: mlp
+  encoder:
+    type: mlp
+training:
+  checkpoint_include_replay_buffer: false
+output:
+  run_name: P3_mlp_encoder
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

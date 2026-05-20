@@ -1,0 +1,9 @@
+experiment:
+  type: rebalance_frequency_analysis
+rebalance:
+  mode: monthly
+output:
+  run_name: rebalance_frequency_analysis
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

@@ -1,0 +1,7 @@
+experiment:
+  type: market_regime
+output:
+  run_name: market_regime
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

@@ -1,0 +1,1431 @@
+{
+  "schema_version": "1.0",
+  "scope": {
+    "root": ".",
+    "mode": "subtree_only",
+    "parent_inspection_allowed": false,
+    "notes": [
+      "current working directory is the full visible boundary for this routing layer",
+      "parent callers, sibling repos, and external services are out_of_scope"
+    ]
+  },
+  "routing_merge_contract": {
+    "inherited_module_fields": [
+      "related_tests",
+      "related_configs",
+      "pitfall_ids",
+      "minimum_regression",
+      "read_before_edit",
+      "scope_notes"
+    ],
+    "route_override_fields": [
+      "first_read_files",
+      "then_check_files",
+      "related_tests",
+      "related_configs",
+      "pitfall_ids",
+      "minimum_regression",
+      "expand_search_when",
+      "stop_and_verify_when",
+      "fact_check",
+      "scope_notes",
+      "notes"
+    ]
+  },
+  "scan_basis": {
+    "bounded_first_pass": true,
+    "sampled_files": [
+      {
+        "kind": "file",
+        "ref": "pyproject.toml"
+      },
+      {
+        "kind": "file",
+        "ref": "requirements.txt"
+      },
+      {
+        "kind": "file",
+        "ref": "src/data/feature_matrix.py"
+      },
+      {
+        "kind": "file",
+        "ref": "src/envs/portfolio_rebalance_env.py"
+      },
+      {
+        "kind": "file",
+        "ref": "src/envs/backtest_engine.py"
+      },
+      {
+        "kind": "file",
+        "ref": "src/models/partial_rebalance_gated_ppo.py"
+      },
+      {
+        "kind": "file",
+        "ref": "src/baselines/base_strategy.py"
+      },
+      {
+        "kind": "file",
+        "ref": "scripts/rebuild_etf_lof_data.py"
+      }
+    ],
+    "sampled_directories": [
+      {
+        "kind": "dir",
+        "ref": "src/data"
+      },
+      {
+        "kind": "dir",
+        "ref": "src/envs"
+      },
+      {
+        "kind": "dir",
+        "ref": "src/models"
+      },
+      {
+        "kind": "dir",
+        "ref": "src/agents"
+      },
+      {
+        "kind": "dir",
+        "ref": "src/baselines"
+      },
+      {
+        "kind": "dir",
+        "ref": "src/experiments"
+      },
+      {
+        "kind": "dir",
+        "ref": "configs"
+      },
+      {
+        "kind": "dir",
+        "ref": "tests"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "id": "config_surface",
+      "name": "config-surface",
+      "path": {
+        "kind": "dir",
+        "ref": "configs"
+      },
+      "kind": "module_family",
+      "purpose": [
+        "experiment yaml surface",
+        "baseline yaml surface",
+        "pytest discovery and dependency surface"
+      ],
+      "task_keywords": [
+        "config",
+        "yaml",
+        "experiment",
+        "baseline",
+        "dependency",
+        "pytest"
+      ],
+      "entry_files": [
+        {
+          "kind": "file",
+          "ref": "pyproject.toml"
+        },
+        {
+          "kind": "file",
+          "ref": "requirements.txt"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/baselines.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/experiments/main.yaml"
+        }
+      ],
+      "key_symbols": [
+        "unknown"
+      ],
+      "first_read_files": [
+        {
+          "kind": "file",
+          "ref": "pyproject.toml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/experiments/main.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/baselines.yaml"
+        }
+      ],
+      "then_check_files": [
+        {
+          "kind": "file",
+          "ref": "requirements.txt"
+        },
+        {
+          "kind": "file",
+          "ref": "requirements_data_pipeline.txt"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/ablation.yaml"
+        },
+        {
+          "kind": "dir",
+          "ref": "configs/experiments"
+        }
+      ],
+      "upstream_dependencies": [],
+      "downstream_dependencies": [
+        {
+          "kind": "module",
+          "ref": "data_pipeline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "env_runtime_family"
+        },
+        {
+          "kind": "module",
+          "ref": "model_partial_rebalance_family"
+        },
+        {
+          "kind": "module",
+          "ref": "agent_training_family"
+        },
+        {
+          "kind": "module",
+          "ref": "baseline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "experiment_pipeline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "ops_scripts_family"
+        }
+      ],
+      "out_of_scope_dependencies": [],
+      "related_tests": [
+        {
+          "kind": "file",
+          "ref": "tests/test_config.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_cli_entrypoint.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_experiments.py"
+        }
+      ],
+      "related_configs": [
+        {
+          "kind": "file",
+          "ref": "pyproject.toml"
+        },
+        {
+          "kind": "file",
+          "ref": "requirements.txt"
+        },
+        {
+          "kind": "file",
+          "ref": "requirements_data_pipeline.txt"
+        },
+        {
+          "kind": "dir",
+          "ref": "configs/experiments"
+        }
+      ],
+      "risk_flags": [
+        "config_fanout",
+        "dependency_surface"
+      ],
+      "edit_risk": "medium",
+      "blast_radius": [
+        "experiment selection",
+        "training defaults",
+        "pytest discovery"
+      ],
+      "pitfall_ids": [
+        "P06"
+      ],
+      "minimum_regression": [
+        {
+          "kind": "command",
+          "ref": "pytest tests/test_config.py tests/test_cli_entrypoint.py tests/test_experiments.py"
+        }
+      ],
+      "read_before_edit": [
+        "re-open target yaml and direct consumer files",
+        "confirm config key path in code before rename"
+      ],
+      "routing_confidence": "medium",
+      "expand_search_when": [
+        "changing default config keys",
+        "touching experiment names consumed by CLI or registry"
+      ],
+      "scope_notes": [
+        "no parent-level config may be assumed"
+      ],
+      "notes": []
+    },
+    {
+      "id": "data_pipeline_family",
+      "name": "data-pipeline-family",
+      "path": {
+        "kind": "dir",
+        "ref": "src/data"
+      },
+      "kind": "module_family",
+      "purpose": [
+        "dataset loading",
+        "feature matrix construction",
+        "market image materialization",
+        "leakage guard rails"
+      ],
+      "task_keywords": [
+        "feature",
+        "market image",
+        "loader",
+        "split",
+        "preprocess",
+        "leakage",
+        "auxiliary target",
+        "dataset"
+      ],
+      "entry_files": [
+        {
+          "kind": "file",
+          "ref": "src/data/feature_matrix.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/data/loader.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/data/leakage_checks.py"
+        }
+      ],
+      "key_symbols": [
+        "FeatureMatrix",
+        "MarketImageDataset",
+        "FeatureMatrixBuilder",
+        "FEATURE_PROVENANCE_COLUMNS"
+      ],
+      "first_read_files": [
+        {
+          "kind": "file",
+          "ref": "src/data/feature_matrix.py"
+        }
+      ],
+      "then_check_files": [
+        {
+          "kind": "file",
+          "ref": "src/data/loader.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/data/leakage_checks.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/data/preprocess.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/data/splits.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/data/auxiliary_targets.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/data/akshare_etf_fetcher.py"
+        }
+      ],
+      "upstream_dependencies": [
+        {
+          "kind": "module",
+          "ref": "config_surface"
+        }
+      ],
+      "downstream_dependencies": [
+        {
+          "kind": "module",
+          "ref": "env_runtime_family"
+        },
+        {
+          "kind": "module",
+          "ref": "agent_training_family"
+        },
+        {
+          "kind": "module",
+          "ref": "experiment_pipeline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "ops_scripts_family"
+        }
+      ],
+      "out_of_scope_dependencies": [
+        {
+          "kind": "package",
+          "ref": "numpy"
+        },
+        {
+          "kind": "package",
+          "ref": "pandas"
+        },
+        {
+          "kind": "package",
+          "ref": "pyarrow"
+        },
+        {
+          "kind": "package",
+          "ref": "scikit-learn"
+        }
+      ],
+      "related_tests": [
+        {
+          "kind": "file",
+          "ref": "tests/test_data_loader.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_auxiliary_targets.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_deterministic.py"
+        }
+      ],
+      "related_configs": [
+        {
+          "kind": "file",
+          "ref": "requirements_data_pipeline.txt"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/experiments/input_matrix_ablation.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/experiments/auxiliary_task_sensitivity.yaml"
+        }
+      ],
+      "risk_flags": [
+        "lookahead_leakage",
+        "schema_contract",
+        "empty_split_failure"
+      ],
+      "edit_risk": "high",
+      "blast_radius": [
+        "observation tensors",
+        "split boundaries",
+        "feature provenance outputs"
+      ],
+      "pitfall_ids": [
+        "P01"
+      ],
+      "minimum_regression": [
+        {
+          "kind": "command",
+          "ref": "pytest tests/test_data_loader.py tests/test_auxiliary_targets.py tests/test_deterministic.py"
+        }
+      ],
+      "read_before_edit": [
+        "re-open leakage checks and loader contracts",
+        "confirm date/index alignment and empty-split behavior"
+      ],
+      "routing_confidence": "high",
+      "expand_search_when": [
+        "changing feature group membership",
+        "changing date filtering or availability mask semantics"
+      ],
+      "scope_notes": [
+        "dataset inputs or services outside this subtree are out_of_scope"
+      ],
+      "notes": []
+    },
+    {
+      "id": "env_runtime_family",
+      "name": "env-runtime-family",
+      "path": {
+        "kind": "dir",
+        "ref": "src/envs"
+      },
+      "kind": "module_family",
+      "purpose": [
+        "gym environment runtime",
+        "backtest execution",
+        "rebalance scheduling",
+        "cost and reward accounting"
+      ],
+      "task_keywords": [
+        "env",
+        "backtest",
+        "execution",
+        "scheduler",
+        "reward",
+        "cost",
+        "constraint",
+        "rebalance"
+      ],
+      "entry_files": [
+        {
+          "kind": "file",
+          "ref": "src/envs/portfolio_rebalance_env.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/backtest_engine.py"
+        }
+      ],
+      "key_symbols": [
+        "PortfolioRebalanceEnv",
+        "BacktestEngine",
+        "PendingActionQueue",
+        "BacktestResult",
+        "PENDING_TRUNCATION_REASON"
+      ],
+      "first_read_files": [
+        {
+          "kind": "file",
+          "ref": "src/envs/portfolio_rebalance_env.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/backtest_engine.py"
+        }
+      ],
+      "then_check_files": [
+        {
+          "kind": "file",
+          "ref": "src/envs/portfolio_execution_core.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/rebalance_scheduler.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/reward_calculator.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/cost_model.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/constraint_manager.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/state.py"
+        }
+      ],
+      "upstream_dependencies": [
+        {
+          "kind": "module",
+          "ref": "config_surface"
+        },
+        {
+          "kind": "module",
+          "ref": "data_pipeline_family"
+        }
+      ],
+      "downstream_dependencies": [
+        {
+          "kind": "module",
+          "ref": "agent_training_family"
+        },
+        {
+          "kind": "module",
+          "ref": "baseline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "experiment_pipeline_family"
+        }
+      ],
+      "out_of_scope_dependencies": [
+        {
+          "kind": "package",
+          "ref": "gymnasium"
+        },
+        {
+          "kind": "package",
+          "ref": "numpy"
+        },
+        {
+          "kind": "package",
+          "ref": "pandas"
+        }
+      ],
+      "related_tests": [
+        {
+          "kind": "file",
+          "ref": "tests/test_env.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_backtest_engine.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_execution_core.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_constraint_manager.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_cost_model.py"
+        }
+      ],
+      "related_configs": [
+        {
+          "kind": "file",
+          "ref": "configs/experiments/main.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/experiments/partial_rebalance_analysis.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/experiments/transaction_cost_sensitivity.yaml"
+        }
+      ],
+      "risk_flags": [
+        "action_schema_contract",
+        "delayed_execution_branch",
+        "artifact_output_schema"
+      ],
+      "edit_risk": "high",
+      "blast_radius": [
+        "step semantics",
+        "backtest artifacts",
+        "reward accounting",
+        "rebalance behavior"
+      ],
+      "pitfall_ids": [
+        "P01",
+        "P02",
+        "P03",
+        "P04"
+      ],
+      "minimum_regression": [
+        {
+          "kind": "command",
+          "ref": "pytest tests/test_env.py tests/test_backtest_engine.py tests/test_execution_core.py tests/test_constraint_manager.py tests/test_cost_model.py"
+        }
+      ],
+      "read_before_edit": [
+        "re-open state schema and action dict fields",
+        "confirm delayed_action_execution and scheduler branches"
+      ],
+      "routing_confidence": "high",
+      "expand_search_when": [
+        "changing decision_date versus execution_date semantics",
+        "changing daily artifact columns or pending action handling"
+      ],
+      "scope_notes": [
+        "callers outside visible subtree are out_of_scope"
+      ],
+      "notes": []
+    },
+    {
+      "id": "model_partial_rebalance_family",
+      "name": "model-partial-rebalance-family",
+      "path": {
+        "kind": "dir",
+        "ref": "src/models"
+      },
+      "kind": "module_family",
+      "purpose": [
+        "gated PPO policy heads",
+        "partial rebalance intensity modeling",
+        "DQN gate output-dimension coupling"
+      ],
+      "task_keywords": [
+        "partial rebalance",
+        "gate",
+        "rho",
+        "intensity",
+        "dqn",
+        "ppo",
+        "joint log prob"
+      ],
+      "entry_files": [
+        {
+          "kind": "file",
+          "ref": "src/models/partial_rebalance_gated_ppo.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/models/partial_rebalance_gate.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/models/dqn_gated_multitask_cnn_ppo.py"
+        }
+      ],
+      "key_symbols": [
+        "PartialRebalanceGatedPPO",
+        "VALID_PARTIAL_REBALANCE_MODES",
+        "DEFAULT_DISCRETE_RHO_VALUES",
+        "BetaIntensityActor",
+        "DiscretePartialGate"
+      ],
+      "first_read_files": [
+        {
+          "kind": "file",
+          "ref": "src/models/partial_rebalance_gated_ppo.py"
+        }
+      ],
+      "then_check_files": [
+        {
+          "kind": "file",
+          "ref": "src/models/partial_rebalance_gate.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/models/dqn_gated_multitask_cnn_ppo.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/models/ppo_actor.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/models/ppo_critic.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/models/preference_conditioned_gated_ppo.py"
+        }
+      ],
+      "upstream_dependencies": [
+        {
+          "kind": "module",
+          "ref": "config_surface"
+        }
+      ],
+      "downstream_dependencies": [
+        {
+          "kind": "module",
+          "ref": "agent_training_family"
+        },
+        {
+          "kind": "module",
+          "ref": "experiment_pipeline_family"
+        }
+      ],
+      "out_of_scope_dependencies": [
+        {
+          "kind": "package",
+          "ref": "torch"
+        }
+      ],
+      "related_tests": [
+        {
+          "kind": "file",
+          "ref": "tests/test_dqn_gate.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_distributional.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_agents.py"
+        }
+      ],
+      "related_configs": [
+        {
+          "kind": "file",
+          "ref": "configs/experiments/partial_rebalance_analysis.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/experiments/preference_conditioned_analysis.yaml"
+        }
+      ],
+      "risk_flags": [
+        "mode_specific_shape_contract",
+        "output_dim_coupling",
+        "log_prob_shape_checks"
+      ],
+      "edit_risk": "high",
+      "blast_radius": [
+        "policy output schema",
+        "rebalance gate behavior",
+        "agent-model compatibility"
+      ],
+      "pitfall_ids": [
+        "P02",
+        "P06"
+      ],
+      "minimum_regression": [
+        {
+          "kind": "command",
+          "ref": "pytest tests/test_dqn_gate.py tests/test_distributional.py tests/test_agents.py"
+        }
+      ],
+      "read_before_edit": [
+        "re-open gate mode branches and output-dimension forcing",
+        "confirm downstream agent expectations for gate_action and rebalance_intensity"
+      ],
+      "routing_confidence": "high",
+      "expand_search_when": [
+        "changing partial_rebalance.mode values",
+        "changing tensor shapes or log-prob composition"
+      ],
+      "scope_notes": [
+        "torch internals are out_of_scope"
+      ],
+      "notes": []
+    },
+    {
+      "id": "agent_training_family",
+      "name": "agent-training-family",
+      "path": {
+        "kind": "dir",
+        "ref": "src/agents"
+      },
+      "kind": "module_family",
+      "purpose": [
+        "agent wrappers",
+        "training guards",
+        "specialized agent variants"
+      ],
+      "task_keywords": [
+        "agent",
+        "training",
+        "checkpoint",
+        "device",
+        "ppo agent",
+        "dqn agent",
+        "hybrid agent"
+      ],
+      "entry_files": [
+        {
+          "kind": "file",
+          "ref": "src/agents/partial_rebalance_agent.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/agents/ppo_agent.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/agents/training_guard.py"
+        }
+      ],
+      "key_symbols": [
+        "unknown"
+      ],
+      "first_read_files": [
+        {
+          "kind": "file",
+          "ref": "src/agents/partial_rebalance_agent.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/agents/ppo_agent.py"
+        }
+      ],
+      "then_check_files": [
+        {
+          "kind": "file",
+          "ref": "src/agents/training_guard.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/agents/dqn_agent.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/agents/hybrid_agent.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/agents/distributional_agent.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/agents/preference_agent.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/agents/uncertainty_agent.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/agents/_specialized_agent.py"
+        }
+      ],
+      "upstream_dependencies": [
+        {
+          "kind": "module",
+          "ref": "config_surface"
+        },
+        {
+          "kind": "module",
+          "ref": "data_pipeline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "env_runtime_family"
+        },
+        {
+          "kind": "module",
+          "ref": "model_partial_rebalance_family"
+        }
+      ],
+      "downstream_dependencies": [
+        {
+          "kind": "module",
+          "ref": "experiment_pipeline_family"
+        }
+      ],
+      "out_of_scope_dependencies": [
+        {
+          "kind": "package",
+          "ref": "torch"
+        }
+      ],
+      "related_tests": [
+        {
+          "kind": "file",
+          "ref": "tests/test_agents.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_checkpoint.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_device.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_deterministic.py"
+        }
+      ],
+      "related_configs": [
+        {
+          "kind": "file",
+          "ref": "configs/experiments/main.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/experiments/seed_stability.yaml"
+        }
+      ],
+      "risk_flags": [
+        "agent_model_env_contract",
+        "checkpoint_compatibility",
+        "device_specific_behavior"
+      ],
+      "edit_risk": "high",
+      "blast_radius": [
+        "training loops",
+        "checkpoint load/save",
+        "agent selection by experiment pipeline"
+      ],
+      "pitfall_ids": [
+        "P02",
+        "P06"
+      ],
+      "minimum_regression": [
+        {
+          "kind": "command",
+          "ref": "pytest tests/test_agents.py tests/test_checkpoint.py tests/test_device.py tests/test_deterministic.py"
+        }
+      ],
+      "read_before_edit": [
+        "re-open selected agent file and direct model/env imports",
+        "confirm checkpoint and device assumptions in tests"
+      ],
+      "routing_confidence": "medium",
+      "expand_search_when": [
+        "changing trainer hooks or agent factory names",
+        "changing checkpoint payload fields"
+      ],
+      "scope_notes": [
+        "agent family routed from visible filenames; implementation facts need code confirmation"
+      ],
+      "notes": [
+        "needs_code_confirmation for key symbols until file content is re-opened"
+      ]
+    },
+    {
+      "id": "baseline_family",
+      "name": "baseline-family",
+      "path": {
+        "kind": "dir",
+        "ref": "src/baselines"
+      },
+      "kind": "module_family",
+      "purpose": [
+        "traditional strategy baselines",
+        "native RL baselines",
+        "baseline output evaluation"
+      ],
+      "task_keywords": [
+        "baseline",
+        "strategy",
+        "markowitz",
+        "risk parity",
+        "equal weight",
+        "eiie",
+        "buy and hold"
+      ],
+      "entry_files": [
+        {
+          "kind": "file",
+          "ref": "src/baselines/base_strategy.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/ppo_baseline.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/risk_evaluation.py"
+        }
+      ],
+      "key_symbols": [
+        "BaseStrategy",
+        "TraditionalStrategyBase"
+      ],
+      "first_read_files": [
+        {
+          "kind": "file",
+          "ref": "src/baselines/base_strategy.py"
+        }
+      ],
+      "then_check_files": [
+        {
+          "kind": "file",
+          "ref": "src/baselines/ppo_baseline.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/native_ppo.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/eiie.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/markowitz.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/risk_evaluation.py"
+        }
+      ],
+      "upstream_dependencies": [
+        {
+          "kind": "module",
+          "ref": "config_surface"
+        },
+        {
+          "kind": "module",
+          "ref": "data_pipeline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "env_runtime_family"
+        }
+      ],
+      "downstream_dependencies": [
+        {
+          "kind": "module",
+          "ref": "experiment_pipeline_family"
+        }
+      ],
+      "out_of_scope_dependencies": [
+        {
+          "kind": "package",
+          "ref": "numpy"
+        }
+      ],
+      "related_tests": [
+        {
+          "kind": "file",
+          "ref": "tests/test_baselines.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_baseline_output_schema.py"
+        }
+      ],
+      "related_configs": [
+        {
+          "kind": "file",
+          "ref": "configs/baselines.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/experiments/baseline_comparison.yaml"
+        }
+      ],
+      "risk_flags": [
+        "strategy_action_contract",
+        "output_schema_coupling"
+      ],
+      "edit_risk": "medium",
+      "blast_radius": [
+        "strategy outputs",
+        "baseline comparison runs",
+        "artifact schema parity"
+      ],
+      "pitfall_ids": [
+        "P02",
+        "P04"
+      ],
+      "minimum_regression": [
+        {
+          "kind": "command",
+          "ref": "pytest tests/test_baselines.py tests/test_baseline_output_schema.py"
+        }
+      ],
+      "read_before_edit": [
+        "re-open BaseStrategy contracts and selected concrete baseline",
+        "confirm downstream schema expectations before changing action or output fields"
+      ],
+      "routing_confidence": "medium",
+      "expand_search_when": [
+        "editing baseline registry names",
+        "changing baseline output columns or risk metrics"
+      ],
+      "scope_notes": [
+        "family routed from representative files; inspect concrete baseline before edit"
+      ],
+      "notes": []
+    },
+    {
+      "id": "experiment_pipeline_family",
+      "name": "experiment-pipeline-family",
+      "path": {
+        "kind": "dir",
+        "ref": "src/experiments"
+      },
+      "kind": "module_family",
+      "purpose": [
+        "experiment entrypoints",
+        "trainer and pipeline orchestration",
+        "registry and aggregation"
+      ],
+      "task_keywords": [
+        "experiment",
+        "run all",
+        "run experiment",
+        "registry",
+        "trainer",
+        "aggregate",
+        "cli",
+        "pipeline"
+      ],
+      "entry_files": [
+        {
+          "kind": "file",
+          "ref": "src/experiments/run_experiment.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/run_all.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/pipeline.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/registry.py"
+        }
+      ],
+      "key_symbols": [
+        "unknown"
+      ],
+      "first_read_files": [
+        {
+          "kind": "file",
+          "ref": "src/experiments/run_experiment.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/pipeline.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/registry.py"
+        }
+      ],
+      "then_check_files": [
+        {
+          "kind": "file",
+          "ref": "src/experiments/trainer.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/run_all.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/aggregate_results.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/external_baselines.py"
+        }
+      ],
+      "upstream_dependencies": [
+        {
+          "kind": "module",
+          "ref": "config_surface"
+        },
+        {
+          "kind": "module",
+          "ref": "data_pipeline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "env_runtime_family"
+        },
+        {
+          "kind": "module",
+          "ref": "model_partial_rebalance_family"
+        },
+        {
+          "kind": "module",
+          "ref": "agent_training_family"
+        },
+        {
+          "kind": "module",
+          "ref": "baseline_family"
+        }
+      ],
+      "downstream_dependencies": [],
+      "out_of_scope_dependencies": [],
+      "related_tests": [
+        {
+          "kind": "file",
+          "ref": "tests/test_experiments.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_cli_entrypoint.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_config.py"
+        }
+      ],
+      "related_configs": [
+        {
+          "kind": "file",
+          "ref": "configs/experiments/main.yaml"
+        },
+        {
+          "kind": "dir",
+          "ref": "configs/experiments"
+        }
+      ],
+      "risk_flags": [
+        "fanout_entrypoint",
+        "config_name_coupling",
+        "result_schema_passthrough"
+      ],
+      "edit_risk": "high",
+      "blast_radius": [
+        "experiment launch",
+        "registry lookup",
+        "result aggregation"
+      ],
+      "pitfall_ids": [
+        "P04",
+        "P06"
+      ],
+      "minimum_regression": [
+        {
+          "kind": "command",
+          "ref": "pytest tests/test_experiments.py tests/test_cli_entrypoint.py tests/test_config.py"
+        }
+      ],
+      "read_before_edit": [
+        "re-open selected entrypoint and its registry/trainer linkage",
+        "confirm config names and output schema assumptions before edit"
+      ],
+      "routing_confidence": "medium",
+      "expand_search_when": [
+        "changing experiment ids or registry keys",
+        "changing trainer output payload or aggregation columns"
+      ],
+      "scope_notes": [
+        "CLI or scheduler layers outside this subtree are out_of_scope"
+      ],
+      "notes": [
+        "needs_code_confirmation for key symbols until file content is re-opened"
+      ]
+    },
+    {
+      "id": "ops_scripts_family",
+      "name": "ops-scripts-family",
+      "path": {
+        "kind": "dir",
+        "ref": "scripts"
+      },
+      "kind": "module_family",
+      "purpose": [
+        "dataset rebuild",
+        "PGPortfolio import and export",
+        "metrics factory execution"
+      ],
+      "task_keywords": [
+        "rebuild data",
+        "pgportfolio",
+        "import results",
+        "export dataset",
+        "metrics factory",
+        "fetch"
+      ],
+      "entry_files": [
+        {
+          "kind": "file",
+          "ref": "scripts/rebuild_etf_lof_data.py"
+        },
+        {
+          "kind": "file",
+          "ref": "scripts/export_pgportfolio_dataset.py"
+        },
+        {
+          "kind": "file",
+          "ref": "scripts/import_pgportfolio_results.py"
+        },
+        {
+          "kind": "file",
+          "ref": "scripts/run_pyfinance_metrics_factory.py"
+        }
+      ],
+      "key_symbols": [
+        "Asset",
+        "ASSETS",
+        "ensure_dirs",
+        "fetch_tencent",
+        "write_wide",
+        "write_asset_universe"
+      ],
+      "first_read_files": [
+        {
+          "kind": "file",
+          "ref": "scripts/rebuild_etf_lof_data.py"
+        }
+      ],
+      "then_check_files": [
+        {
+          "kind": "file",
+          "ref": "scripts/export_pgportfolio_dataset.py"
+        },
+        {
+          "kind": "file",
+          "ref": "scripts/import_pgportfolio_results.py"
+        },
+        {
+          "kind": "file",
+          "ref": "scripts/run_pyfinance_metrics_factory.py"
+        }
+      ],
+      "upstream_dependencies": [
+        {
+          "kind": "module",
+          "ref": "config_surface"
+        },
+        {
+          "kind": "module",
+          "ref": "data_pipeline_family"
+        }
+      ],
+      "downstream_dependencies": [
+        {
+          "kind": "module",
+          "ref": "data_pipeline_family"
+        }
+      ],
+      "out_of_scope_dependencies": [
+        {
+          "kind": "package",
+          "ref": "requests"
+        },
+        {
+          "kind": "url",
+          "ref": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+        }
+      ],
+      "related_tests": [
+        {
+          "kind": "file",
+          "ref": "tests/test_data_loader.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_config.py"
+        }
+      ],
+      "related_configs": [
+        {
+          "kind": "file",
+          "ref": "requirements_data_pipeline.txt"
+        }
+      ],
+      "risk_flags": [
+        "absolute_root_constant",
+        "network_fetch_variability",
+        "destructive_data_overwrite"
+      ],
+      "edit_risk": "high",
+      "blast_radius": [
+        "data/raw",
+        "data/processed",
+        "data/metrics_factory",
+        "data/reports"
+      ],
+      "pitfall_ids": [
+        "P05"
+      ],
+      "minimum_regression": [
+        {
+          "kind": "command",
+          "ref": "pytest tests/test_data_loader.py tests/test_config.py"
+        }
+      ],
+      "read_before_edit": [
+        "re-open path constants and overwrite targets",
+        "confirm all generated outputs remain under current subtree"
+      ],
+      "routing_confidence": "high",
+      "expand_search_when": [
+        "changing file naming or output directory layout",
+        "changing remote fetch logic or asset universe columns"
+      ],
+      "scope_notes": [
+        "remote data service behavior is out_of_scope"
+      ],
+      "notes": []
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+experiment:
+  type: ablation
+dqn:
+  enabled: false
+training:
+  checkpoint_include_replay_buffer: false
+output:
+  run_name: P3_without_dqn_gate
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

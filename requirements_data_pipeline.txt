@@ -1,0 +1,11 @@
+pandas
+numpy
+pyarrow
+requests
+tqdm
+python-dateutil
+scipy
+numba
+akshare
+openpyxl
+pysocks

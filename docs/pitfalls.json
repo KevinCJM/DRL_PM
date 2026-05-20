@@ -1,0 +1,417 @@
+{
+  "schema_version": "1.0",
+  "scope_mode": "subtree_only",
+  "pitfalls": [
+    {
+      "id": "P01",
+      "title": "Feature leakage and decision-visibility contract",
+      "severity": "high",
+      "confidence": "high",
+      "symptoms": [
+        "future labels appear in observation features",
+        "execution-only fields are visible at decision time",
+        "date filtering or windowing silently drops expected rows"
+      ],
+      "trigger_actions": [
+        "edit feature generation",
+        "edit market image windowing",
+        "edit leakage checks",
+        "edit observation schema"
+      ],
+      "why_risky": [
+        "can invalidate offline results without obvious runtime failure"
+      ],
+      "related_paths": [
+        {
+          "kind": "file",
+          "ref": "src/data/feature_matrix.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/data/leakage_checks.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/portfolio_rebalance_env.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/backtest_engine.py"
+        }
+      ],
+      "affected_modules": [
+        {
+          "kind": "module",
+          "ref": "data_pipeline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "env_runtime_family"
+        }
+      ],
+      "blast_radius": [
+        "feature tensors",
+        "train/validation/test integrity",
+        "reported strategy performance"
+      ],
+      "check_before_edit": [
+        "re-open leakage check helpers",
+        "confirm no future label or execution field enters observation",
+        "confirm date_index and full-window behavior"
+      ],
+      "safe_observation_methods": [
+        "inspect assert_decision_visibility_contract call sites",
+        "run data-focused pytest before broader edits"
+      ],
+      "notes": []
+    },
+    {
+      "id": "P02",
+      "title": "Action and state contract coupling across env, agents, and baselines",
+      "severity": "high",
+      "confidence": "high",
+      "symptoms": [
+        "ERR_STRATEGY_ACTION_CONTRACT",
+        "ERR_STRATEGY_STATE_CONTRACT",
+        "ERR_ACTION_SHAPE_MISMATCH",
+        "ERR_STATE_SCHEMA_MISMATCH"
+      ],
+      "trigger_actions": [
+        "edit PortfolioAction fields",
+        "edit action_space or observation_space",
+        "edit strategy or agent return payloads",
+        "edit state dataclasses"
+      ],
+      "why_risky": [
+        "multiple module families share the same runtime contract"
+      ],
+      "related_paths": [
+        {
+          "kind": "file",
+          "ref": "src/envs/portfolio_rebalance_env.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/backtest_engine.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/state.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/base_strategy.py"
+        },
+        {
+          "kind": "dir",
+          "ref": "src/agents"
+        }
+      ],
+      "affected_modules": [
+        {
+          "kind": "module",
+          "ref": "env_runtime_family"
+        },
+        {
+          "kind": "module",
+          "ref": "model_partial_rebalance_family"
+        },
+        {
+          "kind": "module",
+          "ref": "agent_training_family"
+        },
+        {
+          "kind": "module",
+          "ref": "baseline_family"
+        }
+      ],
+      "blast_radius": [
+        "training loops",
+        "backtests",
+        "baseline adapters"
+      ],
+      "check_before_edit": [
+        "re-open state.py before changing payload fields",
+        "confirm strategy compute_target_weights return contract",
+        "confirm env action dict keys and tensor shapes"
+      ],
+      "safe_observation_methods": [
+        "compare contracts against visible tests",
+        "verify all changed call sites in current subtree"
+      ],
+      "notes": []
+    },
+    {
+      "id": "P03",
+      "title": "Delayed execution and pending-action branch split",
+      "severity": "high",
+      "confidence": "high",
+      "symptoms": [
+        "pending actions never execute",
+        "execution_date and decision_date drift",
+        "ERR_EXECUTION_DATE_OUT_OF_RANGE"
+      ],
+      "trigger_actions": [
+        "edit delayed_action_execution logic",
+        "edit pending queue behavior",
+        "edit scheduler pre/post checks",
+        "edit execution date construction"
+      ],
+      "why_risky": [
+        "env and backtest each branch on delayed execution semantics"
+      ],
+      "related_paths": [
+        {
+          "kind": "file",
+          "ref": "src/envs/portfolio_rebalance_env.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/backtest_engine.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/rebalance_scheduler.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/portfolio_execution_core.py"
+        }
+      ],
+      "affected_modules": [
+        {
+          "kind": "module",
+          "ref": "env_runtime_family"
+        }
+      ],
+      "blast_radius": [
+        "execution ordering",
+        "turnover and cost accounting",
+        "split truncation behavior"
+      ],
+      "check_before_edit": [
+        "confirm PENDING_TRUNCATION_REASON semantics",
+        "trace pending queue append/pop paths",
+        "verify scheduler reset and pre_check/post_check assumptions"
+      ],
+      "safe_observation_methods": [
+        "inspect both immediate and delayed branches before edit",
+        "run env and backtest regression together"
+      ],
+      "notes": []
+    },
+    {
+      "id": "P04",
+      "title": "Backtest and baseline artifact schema rigidity",
+      "severity": "high",
+      "confidence": "high",
+      "symptoms": [
+        "baseline output schema tests fail",
+        "aggregators or import scripts stop reading outputs",
+        "column order or naming drift in daily artifact tables"
+      ],
+      "trigger_actions": [
+        "edit DAILY_*_COLUMNS constants",
+        "edit metrics keys",
+        "edit result aggregation",
+        "edit import/export scripts for backtest artifacts"
+      ],
+      "why_risky": [
+        "schema constants are centralized and reused by multiple workflows"
+      ],
+      "related_paths": [
+        {
+          "kind": "file",
+          "ref": "src/envs/backtest_engine.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/risk_evaluation.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/aggregate_results.py"
+        },
+        {
+          "kind": "file",
+          "ref": "scripts/import_pgportfolio_results.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_baseline_output_schema.py"
+        }
+      ],
+      "affected_modules": [
+        {
+          "kind": "module",
+          "ref": "env_runtime_family"
+        },
+        {
+          "kind": "module",
+          "ref": "baseline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "experiment_pipeline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "ops_scripts_family"
+        }
+      ],
+      "blast_radius": [
+        "daily artifact tables",
+        "metrics export",
+        "result aggregation"
+      ],
+      "check_before_edit": [
+        "confirm all schema consumers inside current subtree",
+        "preserve column ordering unless task explicitly changes schema",
+        "verify tests and import/export scripts together"
+      ],
+      "safe_observation_methods": [
+        "inspect DAILY_*_COLUMNS and test expectations first",
+        "run schema-focused pytest set"
+      ],
+      "notes": []
+    },
+    {
+      "id": "P05",
+      "title": "Absolute root constant and data overwrite risk in ops scripts",
+      "severity": "high",
+      "confidence": "high",
+      "symptoms": [
+        "script writes to a fixed absolute project path",
+        "generated parquet or csv files overwrite existing data",
+        "relocated subtree still writes to original path"
+      ],
+      "trigger_actions": [
+        "edit or run rebuild_etf_lof_data.py",
+        "change output directories",
+        "change asset-universe or wide-file naming"
+      ],
+      "why_risky": [
+        "script bypasses cwd-relative routing and writes to multiple data directories"
+      ],
+      "related_paths": [
+        {
+          "kind": "file",
+          "ref": "scripts/rebuild_etf_lof_data.py"
+        },
+        {
+          "kind": "dir",
+          "ref": "data/raw"
+        },
+        {
+          "kind": "dir",
+          "ref": "data/processed"
+        },
+        {
+          "kind": "dir",
+          "ref": "data/metrics_factory"
+        },
+        {
+          "kind": "dir",
+          "ref": "data/reports"
+        }
+      ],
+      "affected_modules": [
+        {
+          "kind": "module",
+          "ref": "ops_scripts_family"
+        },
+        {
+          "kind": "module",
+          "ref": "data_pipeline_family"
+        }
+      ],
+      "blast_radius": [
+        "raw data snapshots",
+        "processed feature files",
+        "report outputs"
+      ],
+      "check_before_edit": [
+        "inspect ROOT and DATA_DIR constants",
+        "confirm write targets remain under current subtree",
+        "check overwrite behavior before destructive writes"
+      ],
+      "safe_observation_methods": [
+        "dry-run resolved paths before network fetch or file write",
+        "treat remote fetch endpoint behavior as out_of_scope"
+      ],
+      "notes": []
+    },
+    {
+      "id": "P06",
+      "title": "Partial rebalance mode to DQN output-dimension coupling",
+      "severity": "medium",
+      "confidence": "high",
+      "symptoms": [
+        "ERR_PARTIAL_REBALANCE_MODE_INVALID",
+        "ERR_PARTIAL_GATE_OUTPUT_DIM_INVALID",
+        "ERR_POLICY_SHAPE_MISMATCH",
+        "gate output shape mismatch in downstream agents"
+      ],
+      "trigger_actions": [
+        "edit partial_rebalance.mode values",
+        "edit DQN output_dim handling",
+        "edit gate_action or rebalance_intensity shapes",
+        "edit partial rebalance experiment configs"
+      ],
+      "why_risky": [
+        "mode selection rewrites output dimensions and joint log-prob logic"
+      ],
+      "related_paths": [
+        {
+          "kind": "file",
+          "ref": "src/models/partial_rebalance_gated_ppo.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/models/partial_rebalance_gate.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/models/dqn_gated_multitask_cnn_ppo.py"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/experiments/partial_rebalance_analysis.yaml"
+        }
+      ],
+      "affected_modules": [
+        {
+          "kind": "module",
+          "ref": "model_partial_rebalance_family"
+        },
+        {
+          "kind": "module",
+          "ref": "agent_training_family"
+        },
+        {
+          "kind": "module",
+          "ref": "config_surface"
+        },
+        {
+          "kind": "module",
+          "ref": "experiment_pipeline_family"
+        }
+      ],
+      "blast_radius": [
+        "policy output tensors",
+        "agent wrappers",
+        "experiment config compatibility"
+      ],
+      "check_before_edit": [
+        "trace mode branch to output_dim forcing",
+        "confirm downstream expectations for gate_action and intensity_log_prob",
+        "re-check relevant experiment yaml values"
+      ],
+      "safe_observation_methods": [
+        "inspect model file and direct consumers together",
+        "run gate and agent tests as one regression set"
+      ],
+      "notes": []
+    }
+  ]
+}

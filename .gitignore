@@ -214,5 +214,60 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# Project runtime artifacts
+/data/
+/results/
+/logs/
+
+# Paper manuscripts and generated article artifacts
+/paper/
+/paper_zh/
+/paper_outline.md
+/论文写作任务单.md
+/writing_progress.md
+
+# Local workflow/runtime directories
+/.benchmarks/
+/.detailed_design_runtime/
+/.development_runtime/
+/.requirements_clarification_runtime/
+/.requirements_review_runtime/
+/.routing_init_runtime/
+/.task_split_runtime/
+/.tmux_stage_locks/
+/.tmux_workflow/
+
+# Large generated artifacts
+*.pt
+*.pth
+*.ckpt
+*.parquet
+*.sqlite
+*.db
+*.aux
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+*.out
+*.pdf
+*.zip
+
+# Local OS/editor noise
+.DS_Store
+
+# Agent process logs
+*_流水记录.jsonl
+*评审记录*
+*_评审记录*
+*_代码评审记录*
+*_整体代码复核记录.md
+*_人机交互澄清记录.md
+*_与人类交流.md
+*_工程师开发内容.md
+*_开发前期.json
+*_复核阶段状态.json
+*_任务单.json
+
 # Streamlit
 .streamlit/secrets.toml

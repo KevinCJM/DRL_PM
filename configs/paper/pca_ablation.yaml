@@ -1,0 +1,12 @@
+experiment:
+  type: pca_ablation
+reproducibility:
+  seed: 42
+  seeds: [42, 123, 2024, 3407, 9999]
+training:
+  checkpoint_include_replay_buffer: false
+output:
+  run_name: P2_pca
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

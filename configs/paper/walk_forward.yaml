@@ -1,0 +1,19 @@
+experiment:
+  type: walk_forward
+split:
+  mode: walk_forward
+  walk_forward:
+    train_years: 3
+    validation_months: 6
+    test_months: 6
+    step_months: 6
+reproducibility:
+  seed: 42
+  seeds: [42, 123, 2024, 3407, 9999]
+training:
+  checkpoint_include_replay_buffer: false
+output:
+  run_name: P6_walk_forward
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

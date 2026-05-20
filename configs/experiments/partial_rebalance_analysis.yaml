@@ -1,0 +1,9 @@
+experiment:
+  type: partial_rebalance_analysis
+partial_rebalance:
+  enabled: true
+output:
+  run_name: partial_rebalance_analysis
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

@@ -1,0 +1,9 @@
+experiment:
+  type: auxiliary_task_sensitivity
+auxiliary:
+  enabled: true
+output:
+  run_name: auxiliary_task_sensitivity
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

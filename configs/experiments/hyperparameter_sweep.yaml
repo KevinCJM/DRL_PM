@@ -1,0 +1,29 @@
+experiment:
+  type: hyperparameter_sweep
+long_running: true
+hpo:
+  enabled: true
+  equal_budget_across_models: true
+  native_only: true
+  metric: validation_sharpe_minus_drawdown_turnover_penalty
+  objective: validation_sharpe_minus_drawdown_turnover_penalty
+  trainable_models:
+    - ppo_dqn_hierarchical_reimplementation
+    - hybrid_dqn_optimizer_equal_weight
+    - hybrid_dqn_optimizer_markowitz_mean_variance
+    - hybrid_dqn_optimizer_minimum_variance
+    - hybrid_dqn_optimizer_sharpe_maximization
+    - hybrid_dqn_optimizer_risk_parity
+hybrid_dqn_optimizer:
+  lookback_window: 252
+  min_observations: 60
+  covariance_shrinkage: 0.1
+  risk_free_rate: 0.0
+  lambda_risk: 1.0
+  markowitz_optimizer_maxiter: 200
+  risk_parity_optimizer_maxiter: 300
+output:
+  run_name: hyperparameter_sweep
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

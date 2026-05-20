@@ -1,0 +1,58 @@
+experiment:
+  type: baseline_comparison
+baselines:
+  enabled: true
+  traditional:
+    - fixed_ratio
+    - equal_weight
+    - buy_and_hold
+    - traditional_markowitz_mean_variance
+    - markowitz_min_variance
+    - markowitz_max_sharpe
+    - risk_parity
+    - inverse_volatility
+    - minimum_drawdown
+    - risk_evaluation
+    - hrp
+    - momentum
+  deep:
+    - ppo_proxy
+    - cnn_ppo_proxy
+    - bernoulli_gated_ppo_proxy
+    - dqn_template_proxy
+    - eiie_proxy
+  native_rl:
+    enabled_models:
+      - ppo_native
+      - cnn_ppo_native
+      - bernoulli_gated_ppo_native
+      - dqn_template_native
+      - eiie_native
+      - pgportfolio_eiie_native
+      - ppo_dqn_hierarchical_reimplementation
+      - hybrid_dqn_optimizer_reimplementation
+    epochs: 20
+    max_train_steps: 128
+    max_validation_steps: 128
+    max_gradient_updates_per_epoch: 16
+dqn:
+  batch_size: 32
+  warmup_steps: 32
+  target_update_interval: 32
+  use_prioritized_replay: false
+  per_enabled: false
+training:
+  epochs: 20
+  checkpoint_include_replay_buffer: false
+hpo:
+  enabled: false
+statistics:
+  primary_metric: sharpe
+reproducibility:
+  seed: 42
+  seeds: [42, 123, 2024, 3407, 9999]
+output:
+  run_name: P1_baseline_comparison_native
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

@@ -1,0 +1,14 @@
+experiment:
+  type: distributional_cvar_analysis
+distributional_cvar:
+  enabled: true
+reproducibility:
+  seed: 42
+  seeds: [42, 123, 2024, 3407, 9999]
+training:
+  checkpoint_include_replay_buffer: false
+output:
+  run_name: P8_distributional_cvar
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM
