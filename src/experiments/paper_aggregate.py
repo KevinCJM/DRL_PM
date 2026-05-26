@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timezone
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from src.models.risk_aware_graph_transformer import RA_GT_RCPO_MODEL_NAMES
 from src.utils.stats import STATISTICS_SUMMARY_COLUMNS, run_statistical_tests
+from src.utils.logger import save_json_atomic
 
 
 PAPER_SEED_SUMMARY_COLUMNS = (
@@ -23,6 +26,7 @@ PAPER_SEED_SUMMARY_COLUMNS = (
     "min",
     "max",
     "median",
+    "n_unique_return_series",
 )
 PPO_DQN_HIERARCHICAL_REIMPLEMENTATION = "ppo_dqn_hierarchical_reimplementation"
 DEFAULT_PAPER_BENCHMARK_MODELS = (
@@ -61,9 +65,23 @@ HYBRID_DQN_OPTIMIZER_CHILD_MODEL_NAMES = (
     "hybrid_dqn_optimizer_sharpe_maximization",
     "hybrid_dqn_optimizer_risk_parity",
 )
+P12_P13_NEW_MODEL_IDS = (
+    "cage_eiie_frozen_gate",
+    "cage_eiie_multilevel_gate",
+    "cage_eiie_distributional",
+    "cage_eiie_joint_light",
+    "cage_eiie_fixed_rho_25",
+    "cage_eiie_fixed_rho_50",
+    "cage_eiie_fixed_rho_75",
+    "graph_transformer_risk_constrained_actor_critic_lite",
+    "gt_rcpo_lite",
+)
+P16_RA_GT_RCPO_MODEL_IDS = tuple(RA_GT_RCPO_MODEL_NAMES)
 PAPER_TRAINABLE_MODEL_IDS = (
     PPO_DQN_HIERARCHICAL_REIMPLEMENTATION,
     *HYBRID_DQN_OPTIMIZER_CHILD_MODEL_NAMES,
+    *P12_P13_NEW_MODEL_IDS,
+    *P16_RA_GT_RCPO_MODEL_IDS,
 )
 PAPER_TRAINABLE_REQUIRED_METADATA = (
     "algorithm_fidelity",
@@ -104,6 +122,7 @@ COMPARISON_FILES = (
     "ablation_results.csv",
     "input_matrix_ablation_results.csv",
     "PCA_ablation_results.csv",
+    "kernel_size_ablation_results.csv",
     "reward_ablation_results.csv",
     "transaction_cost_sensitivity.csv",
     "asset_universe_sensitivity.csv",
@@ -137,9 +156,14 @@ def aggregate_paper_results(
     *,
     benchmark_model: str | None = None,
     benchmark_models: Sequence[str] | None = None,
+    exclude_models: Sequence[str] | None = None,
     seed_metric_columns: Sequence[str] | None = None,
     paper_group_id: str | None = None,
     config: Mapping[str, Any] | None = None,
+    required_protocol_id: str | None = None,
+    required_data_cutoff_date: str | None = None,
+    require_formal_manifest: bool = False,
+    require_availability_mask_contract: bool = False,
 ) -> dict[str, Path]:
     runs = [Path(path).expanduser().resolve() for path in run_dirs]
     if not runs:
@@ -152,6 +176,14 @@ def aggregate_paper_results(
     if paper_group_id is not None:
         comparison["paper_group_id"] = str(paper_group_id)
         daily_returns["paper_group_id"] = str(paper_group_id)
+    formal_filter = {
+        "required_protocol_id": required_protocol_id,
+        "required_data_cutoff_date": required_data_cutoff_date,
+        "require_formal_manifest": bool(require_formal_manifest),
+        "require_availability_mask_contract": bool(require_availability_mask_contract),
+    }
+    comparison, daily_returns = _apply_formal_filters(comparison, daily_returns, formal_filter)
+    comparison, daily_returns = _exclude_paper_models(comparison, daily_returns, exclude_models)
     paper_main = _paper_main_comparison(comparison, daily_returns)
     paper_diagnostic = _paper_diagnostic_comparison(comparison, daily_returns)
     rankable_models = _rankable_models(paper_main)
@@ -165,8 +197,9 @@ def aggregate_paper_results(
         benchmark_models=resolved_benchmarks,
         config=config,
     )
-    seed_summary = _paper_seed_summary(paper_main, metric_columns=seed_metric_columns)
+    seed_summary = _paper_seed_summary(paper_main, metric_columns=seed_metric_columns, daily_returns=daily_returns)
     closest_hybrid = _closest_hybrid_figure_source(paper_main, seed_summary)
+    dedup_report = _paper_aggregate_dedup_report(comparison, daily_returns, paper_main)
 
     outputs = {
         "paper_main_comparison": target / "paper_main_comparison.csv",
@@ -174,13 +207,149 @@ def aggregate_paper_results(
         "paper_paired_statistics": target / "paper_paired_statistics.csv",
         "paper_seed_summary": target / "paper_seed_summary.csv",
         "closest_hybrid_figure_source": target / "closest_hybrid_figure_source.csv",
+        "paper_aggregate_dedup_report": target / "paper_aggregate_dedup_report.csv",
+        "source_run_dirs": target / "source_run_dirs.txt",
+        "diagnostic_status": target / "diagnostic_status.json",
+        "paper_aggregate_manifest": target / "paper_aggregate_manifest.json",
     }
     _write_csv(paper_main, outputs["paper_main_comparison"])
     _write_csv(paper_diagnostic, outputs["paper_diagnostic_comparison"])
     _write_csv(paired, outputs["paper_paired_statistics"])
     _write_csv(seed_summary, outputs["paper_seed_summary"])
     _write_csv(closest_hybrid, outputs["closest_hybrid_figure_source"])
+    _write_csv(dedup_report, outputs["paper_aggregate_dedup_report"])
+    _write_source_run_dirs(runs, outputs["source_run_dirs"])
+    save_json_atomic(
+        _diagnostic_status_payload(paper_main, paper_diagnostic, paired, formal_filter),
+        outputs["diagnostic_status"],
+    )
+    save_json_atomic(
+        _aggregate_manifest_payload(
+            runs,
+            target,
+            outputs,
+            paper_main,
+            paper_diagnostic,
+            paired,
+            seed_summary,
+            dedup_report,
+            formal_filter,
+            paper_group_id=paper_group_id,
+            benchmark_models=resolved_benchmarks,
+            exclude_models=exclude_models,
+        ),
+        outputs["paper_aggregate_manifest"],
+    )
     return outputs
+
+
+def _apply_formal_filters(
+    comparison: pd.DataFrame,
+    daily_returns: pd.DataFrame,
+    formal_filter: Mapping[str, Any],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if not _formal_filter_enabled(formal_filter):
+        return comparison, daily_returns
+    return (
+        _mark_formal_filter_failures(comparison, formal_filter),
+        _mark_formal_filter_failures(daily_returns, formal_filter),
+    )
+
+
+def _exclude_paper_models(
+    comparison: pd.DataFrame,
+    daily_returns: pd.DataFrame,
+    exclude_models: Sequence[str] | None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    excluded = {_clean_value(model) for model in exclude_models or ()}
+    excluded.discard("")
+    if not excluded:
+        return comparison, daily_returns
+    return (
+        _exclude_paper_models_from_frame(comparison, excluded),
+        _exclude_paper_models_from_frame(daily_returns, excluded),
+    )
+
+
+def _exclude_paper_models_from_frame(frame: pd.DataFrame, excluded: set[str]) -> pd.DataFrame:
+    if frame.empty:
+        return frame.copy()
+    result = _with_paper_identity(frame)
+    return result.loc[~result["paper_model_id"].map(_clean_value).isin(excluded)].copy()
+
+
+def _formal_filter_enabled(formal_filter: Mapping[str, Any]) -> bool:
+    return bool(
+        formal_filter.get("required_protocol_id")
+        or formal_filter.get("required_data_cutoff_date")
+        or formal_filter.get("require_formal_manifest")
+        or formal_filter.get("require_availability_mask_contract")
+    )
+
+
+def _mark_formal_filter_failures(frame: pd.DataFrame, formal_filter: Mapping[str, Any]) -> pd.DataFrame:
+    if frame.empty:
+        return frame.copy()
+    result = frame.copy()
+    if "rankable_in_unified_table" not in result.columns:
+        result["rankable_in_unified_table"] = pd.NA
+    if "reason" not in result.columns:
+        result["reason"] = pd.NA
+    result["reason"] = result["reason"].astype("object")
+    reasons = [_formal_filter_reason(row, formal_filter) for _, row in result.iterrows()]
+    failing = pd.Series([bool(reason) for reason in reasons], index=result.index)
+    if failing.any():
+        result.loc[failing, "rankable_in_unified_table"] = False
+        reason_series = pd.Series(reasons, index=result.index)
+        missing_reason = result["reason"].isna() | result["reason"].astype(str).str.strip().eq("")
+        result.loc[failing & missing_reason, "reason"] = reason_series.loc[failing & missing_reason]
+    return result
+
+
+def _formal_filter_reason(row: pd.Series, formal_filter: Mapping[str, Any]) -> str:
+    required_protocol_id = _clean_value(formal_filter.get("required_protocol_id"))
+    if required_protocol_id and _clean_value(row.get("protocol_id")) != required_protocol_id:
+        return "protocol_mismatch"
+    required_data_cutoff_date = _clean_value(formal_filter.get("required_data_cutoff_date"))
+    if required_data_cutoff_date and _clean_value(row.get("data_cutoff_date")) != required_data_cutoff_date:
+        return "data_cutoff_mismatch"
+    if bool(formal_filter.get("require_formal_manifest")):
+        if _clean_value(row.get("return_source")) != "adj_nav":
+            return "return_source_not_adj_nav"
+        if _clean_value(row.get("valuation_source")) != "adj_nav":
+            return "valuation_source_not_adj_nav"
+        if _clean_value(row.get("reward_return_source")) != "adj_nav":
+            return "reward_return_source_not_adj_nav"
+        if _clean_value(row.get("metrics_return_source")) != "adj_nav":
+            return "metrics_return_source_not_adj_nav"
+        if _clean_value(row.get("execution_price_source")) != "ohlcv":
+            return "execution_price_source_not_ohlcv"
+        if not _truthy(row.get("valuation_execution_split")):
+            return "valuation_execution_split_missing"
+        if not _truthy(row.get("reward_valuation_split")):
+            return "reward_valuation_split_missing"
+        if not _truthy(row.get("rankable_in_unified_table")):
+            return "non_rankable"
+        if _clean_value(row.get("diagnostic_status")) != "formal":
+            return "non_formal_diagnostic_status"
+    data_mode = _clean_value(row.get("data_mode"))
+    require_availability = bool(formal_filter.get("require_availability_mask_contract")) or (
+        bool(formal_filter.get("require_formal_manifest")) and data_mode == "availability_mask"
+    )
+    if require_availability:
+        if not _truthy(row.get("availability_mask_contract_passed")):
+            return "availability_mask_contract_failed"
+        unavailable_weight = _numeric_value(row.get("unavailable_asset_weight_abs_max"))
+        if unavailable_weight is None or unavailable_weight != 0.0:
+            return "unavailable_asset_weight_nonzero"
+        frozen_count = _numeric_value(row.get("frozen_or_imputed_valuation_count"))
+        if frozen_count is None or frozen_count != 0.0:
+            return "frozen_or_imputed_valuation_present"
+        if not _truthy(row.get("daily_returns_finite")):
+            return "daily_returns_not_finite"
+        if not _truthy(row.get("daily_nav_finite")):
+            return "daily_nav_not_finite"
+    return ""
 
 
 def _collect_comparison_rows(run_dirs: Sequence[Path]) -> pd.DataFrame:
@@ -202,6 +371,7 @@ def _collect_comparison_rows(run_dirs: Sequence[Path]) -> pd.DataFrame:
             frame["source_path"] = str(run_dir)
             frame["source_file"] = filename
             frame["_source_file_priority"] = _comparison_file_priority(filename)
+            frame = _apply_manifest_metadata(frame, manifest)
             if "seed" not in frame.columns:
                 frame["seed"] = manifest.get("seed")
             fallback_model = _clean_value(manifest.get("model_name")) or _clean_value(experiment_result.get("model_name"))
@@ -250,12 +420,50 @@ def _collect_daily_returns(run_dirs: Sequence[Path]) -> pd.DataFrame:
         frame["source_path"] = str(run_dir)
         frame["source_file"] = selected_path.name
         frame["_source_file_priority"] = _daily_return_file_priority(selected_path.name)
+        frame = _apply_manifest_metadata(frame, manifest)
         if "seed" not in frame.columns:
             frame["seed"] = manifest.get("seed")
         frames.append(frame)
     if frames:
         return _with_paper_identity(pd.concat(frames, ignore_index=True, sort=False))
     return pd.DataFrame(columns=["date", "model_name", "paper_model_id", "net_return", "source_run", "source_experiment", "source_path", "seed"])
+
+
+def _apply_manifest_metadata(frame: pd.DataFrame, manifest: Mapping[str, Any]) -> pd.DataFrame:
+    result = frame.copy()
+    for column in (
+        "protocol_id",
+        "asset_universe_id",
+        "data_cutoff_date",
+        "data_mode",
+        "valuation_source",
+        "return_source",
+        "reward_return_source",
+        "metrics_return_source",
+        "execution_price_source",
+        "valuation_execution_split",
+        "reward_valuation_split",
+        "rankable_in_unified_table",
+        "diagnostic_status",
+        "availability_mask_contract_passed",
+        "min_available_assets_per_date",
+        "unavailable_asset_weight_abs_max",
+        "daily_returns_finite",
+        "daily_nav_finite",
+        "frozen_or_imputed_valuation_count",
+    ):
+        value = manifest.get(column)
+        if value is None and column in {"rankable_in_unified_table", "diagnostic_status"}:
+            rankability = manifest.get("rankability") if isinstance(manifest.get("rankability"), Mapping) else {}
+            value = rankability.get(column)
+        if value is None:
+            continue
+        if column not in result.columns:
+            result[column] = value
+        else:
+            missing = result[column].isna() | result[column].astype(str).str.strip().eq("")
+            result.loc[missing, column] = value
+    return result
 
 
 def _paper_main_comparison(comparison: pd.DataFrame, daily_returns: pd.DataFrame) -> pd.DataFrame:
@@ -405,6 +613,7 @@ def _paper_seed_summary(
     paper_main: pd.DataFrame,
     *,
     metric_columns: Sequence[str] | None = None,
+    daily_returns: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     if paper_main.empty:
         return pd.DataFrame(columns=PAPER_SEED_SUMMARY_COLUMNS)
@@ -417,7 +626,9 @@ def _paper_seed_summary(
         else pd.Series(True, index=paper_main.index)
     )
     included = paper_main.loc[included_mask].copy()
+    unique_return_series = _unique_return_series_counts(daily_returns)
     for (source_experiment, paper_model_id), group in included.groupby(["source_experiment", "paper_model_id"], dropna=False, sort=False):
+        n_unique = int(unique_return_series.get((str(source_experiment), str(paper_model_id)), 0))
         for metric_name in metric_names:
             values = _seed_metric_values(group, metric_name)
             if values.empty:
@@ -434,9 +645,36 @@ def _paper_seed_summary(
                     "min": float(values.min()),
                     "max": float(values.max()),
                     "median": float(values.median()),
+                    "n_unique_return_series": n_unique,
                 }
             )
     return pd.DataFrame(rows, columns=PAPER_SEED_SUMMARY_COLUMNS)
+
+
+def _unique_return_series_counts(daily_returns: pd.DataFrame | None) -> dict[tuple[str, str], int]:
+    if daily_returns is None or daily_returns.empty:
+        return {}
+    source = _with_paper_identity(daily_returns)
+    required = {"source_experiment", "paper_model_id", "date", "net_return"}
+    if not required.issubset(source.columns):
+        return {}
+    counts: dict[tuple[str, str], set[str]] = {}
+    group_cols = ["source_experiment", "paper_model_id"]
+    group_cols.extend(column for column in ("source_run", "seed", "fold_id") if column in source.columns)
+    for group_key, group in source.groupby(group_cols, dropna=False, sort=False):
+        key_values = group_key if isinstance(group_key, tuple) else (group_key,)
+        base_key = (str(key_values[0]), str(key_values[1]))
+        fingerprint = _return_series_fingerprint(group)
+        counts.setdefault(base_key, set()).add(fingerprint)
+    return {key: len(value) for key, value in counts.items()}
+
+
+def _return_series_fingerprint(group: pd.DataFrame) -> str:
+    frame = group.loc[:, ["date", "net_return"]].copy()
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce").astype(str)
+    frame["net_return"] = pd.to_numeric(frame["net_return"], errors="coerce").round(12)
+    frame = frame.sort_values("date", kind="mergesort")
+    return str(pd.util.hash_pandas_object(frame, index=False).sum())
 
 
 def _closest_hybrid_figure_source(paper_main: pd.DataFrame, seed_summary: pd.DataFrame) -> pd.DataFrame:
@@ -843,6 +1081,41 @@ def _dedupe_comparison_rows(frame: pd.DataFrame) -> pd.DataFrame:
     return result.drop(columns=["_source_file_priority"], errors="ignore")
 
 
+def _paper_aggregate_dedup_report(
+    comparison: pd.DataFrame,
+    daily_returns: pd.DataFrame,
+    paper_main: pd.DataFrame,
+) -> pd.DataFrame:
+    rows = [
+        _dedup_report_row(
+            "comparison",
+            comparison,
+            ["paper_group_id" if "paper_group_id" in comparison.columns else "source_run", "paper_model_id", "seed", "fold_id"],
+            after_rows=int(paper_main.shape[0]),
+        ),
+        _dedup_report_row(
+            "daily_returns",
+            daily_returns,
+            ["paper_group_id" if "paper_group_id" in daily_returns.columns else "source_run", "paper_model_id", "date", "seed", "fold_id"],
+            after_rows=int(_dedupe_daily_return_rows(_with_paper_identity(daily_returns)).shape[0]) if not daily_returns.empty else 0,
+        ),
+    ]
+    return pd.DataFrame(rows)
+
+
+def _dedup_report_row(source: str, frame: pd.DataFrame, candidate_keys: Sequence[str], *, after_rows: int) -> dict[str, Any]:
+    before_rows = int(frame.shape[0])
+    keys = [key for key in candidate_keys if key in frame.columns]
+    duplicate_rows = int(frame.duplicated(keys).sum()) if keys else 0
+    return {
+        "source": source,
+        "before_rows": before_rows,
+        "after_rows": int(after_rows),
+        "duplicate_rows": duplicate_rows,
+        "dedupe_keys": json.dumps(keys, ensure_ascii=False),
+    }
+
+
 def _not_applicable_stats(reason: str) -> pd.DataFrame:
     row = {column: pd.NA for column in STATISTICS_SUMMARY_COLUMNS}
     row["test_name"] = "all"
@@ -900,6 +1173,68 @@ def _write_csv(frame: pd.DataFrame, path: Path) -> Path:
     return path
 
 
+def _write_source_run_dirs(run_dirs: Sequence[Path], path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = "\n".join(str(run_dir) for run_dir in run_dirs)
+    path.write_text(text + ("\n" if text else ""), encoding="utf-8")
+    return path
+
+
+def _diagnostic_status_payload(
+    paper_main: pd.DataFrame,
+    paper_diagnostic: pd.DataFrame,
+    paired: pd.DataFrame,
+    formal_filter: Mapping[str, Any],
+) -> dict[str, Any]:
+    paired_statuses = (
+        sorted(str(item) for item in paired["status"].dropna().unique().tolist())
+        if "status" in paired.columns
+        else []
+    )
+    return {
+        "status": "completed_with_diagnostics" if not paper_diagnostic.empty else "completed",
+        "main_row_count": int(paper_main.shape[0]),
+        "diagnostic_row_count": int(paper_diagnostic.shape[0]),
+        "paired_row_count": int(paired.shape[0]),
+        "paired_statuses": paired_statuses,
+        "formal_filter": dict(formal_filter),
+    }
+
+
+def _aggregate_manifest_payload(
+    run_dirs: Sequence[Path],
+    output_dir: Path,
+    outputs: Mapping[str, Path],
+    paper_main: pd.DataFrame,
+    paper_diagnostic: pd.DataFrame,
+    paired: pd.DataFrame,
+    seed_summary: pd.DataFrame,
+    dedup_report: pd.DataFrame,
+    formal_filter: Mapping[str, Any],
+    *,
+    paper_group_id: str | None,
+    benchmark_models: Sequence[str],
+    exclude_models: Sequence[str] | None,
+) -> dict[str, Any]:
+    return {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "output_dir": str(output_dir),
+        "paper_group_id": paper_group_id,
+        "run_dirs": [str(path) for path in run_dirs],
+        "benchmark_models": list(benchmark_models),
+        "exclude_models": list(_dedupe_strings(exclude_models or ())),
+        "formal_filter": dict(formal_filter),
+        "row_counts": {
+            "paper_main_comparison": int(paper_main.shape[0]),
+            "paper_diagnostic_comparison": int(paper_diagnostic.shape[0]),
+            "paper_paired_statistics": int(paired.shape[0]),
+            "paper_seed_summary": int(seed_summary.shape[0]),
+            "paper_aggregate_dedup_report": int(dedup_report.shape[0]),
+        },
+        "outputs": {name: str(path) for name, path in outputs.items()},
+    }
+
+
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Aggregate paper-level experiment tables.")
     parser.add_argument("--run-dir", action="append", required=True, help="Experiment run directory. Repeatable.")
@@ -911,6 +1246,12 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Benchmark model for paired statistics. Repeatable. Defaults to paper protocol benchmarks.",
     )
     parser.add_argument(
+        "--exclude-model",
+        action="append",
+        dest="exclude_models",
+        help="Paper model id to exclude from formal aggregation. Repeatable.",
+    )
+    parser.add_argument(
         "--seed-metric",
         action="append",
         dest="seed_metric_columns",
@@ -919,6 +1260,18 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--paper-group-id",
         help="Optional shared group id for paired statistics across multiple run directories.",
+    )
+    parser.add_argument("--protocol-id", help="Required protocol_id for formal aggregation inputs.")
+    parser.add_argument("--data-cutoff-date", help="Required data_cutoff_date for formal aggregation inputs.")
+    parser.add_argument(
+        "--require-formal-manifest",
+        action="store_true",
+        help="Filter inputs that do not satisfy formal manifest rankability and data governance fields.",
+    )
+    parser.add_argument(
+        "--require-availability-mask-contract",
+        action="store_true",
+        help="Filter inputs that do not satisfy availability-mask artifact checks.",
     )
     return parser.parse_args(argv)
 
@@ -929,8 +1282,13 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Path]:
         args.run_dir,
         args.output_dir,
         benchmark_models=args.benchmark_models,
+        exclude_models=args.exclude_models,
         seed_metric_columns=args.seed_metric_columns,
         paper_group_id=args.paper_group_id,
+        required_protocol_id=args.protocol_id,
+        required_data_cutoff_date=args.data_cutoff_date,
+        require_formal_manifest=bool(args.require_formal_manifest),
+        require_availability_mask_contract=bool(args.require_availability_mask_contract),
     )
 
 

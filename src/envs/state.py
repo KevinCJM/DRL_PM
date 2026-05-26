@@ -210,6 +210,9 @@ class ExecutionMarketState:
     volume_at_execution: np.ndarray
     adv20_at_execution: np.ndarray
     volatility_20d_at_execution: np.ndarray
+    valuation_price_at_decision: np.ndarray | None = None
+    valuation_price_at_execution: np.ndarray | None = None
+    valuation_price_at_next: np.ndarray | None = None
     turnover_rate_at_execution: np.ndarray | None = None
     cost_observation_date: pd.Timestamp | None = None
     cost_observation_timing: str | None = None
@@ -241,6 +244,24 @@ class ExecutionMarketState:
             finite=False,
         )
         self.holding_simple_return = _array_1d("holding_simple_return", self.holding_simple_return, shape, finite=False)
+        self.valuation_price_at_decision = _array_1d(
+            "valuation_price_at_decision",
+            self.execution_price if self.valuation_price_at_decision is None else self.valuation_price_at_decision,
+            shape,
+            finite=False,
+        )
+        self.valuation_price_at_execution = _array_1d(
+            "valuation_price_at_execution",
+            self.execution_price if self.valuation_price_at_execution is None else self.valuation_price_at_execution,
+            shape,
+            finite=False,
+        )
+        self.valuation_price_at_next = _array_1d(
+            "valuation_price_at_next",
+            self.valuation_price_at_execution if self.valuation_price_at_next is None else self.valuation_price_at_next,
+            shape,
+            finite=False,
+        )
         self.amount_at_execution = _array_1d("amount_at_execution", self.amount_at_execution, shape, finite=False)
         self.volume_at_execution = _array_1d("volume_at_execution", self.volume_at_execution, shape, finite=False)
         self.adv20_at_execution = _array_1d("adv20_at_execution", self.adv20_at_execution, shape, finite=False)

@@ -98,6 +98,98 @@ def test_paper_aggregate_filters_hybrid_alias_and_diagnostics(tmp_path):
     assert reasons["hybrid_dqn_optimizer_risk_parity"] == "shared_dqn_multi_optimizer_final_test"
 
 
+def test_paper_aggregate_formal_filter_records_diagnostics(tmp_path):
+    formal_run = _run_dir(
+        tmp_path,
+        "formal_run",
+        [{"model_name": "main", "rankable_in_unified_table": True, "sharpe": 1.0, "reason": None}],
+        [{"date": "2024-01-02", "model_name": "main", "net_return": 0.01}],
+    )
+    diagnostic_run = _run_dir(
+        tmp_path,
+        "diagnostic_run",
+        [{"model_name": "legacy", "rankable_in_unified_table": True, "sharpe": 2.0, "reason": None}],
+        [{"date": "2024-01-02", "model_name": "legacy", "net_return": 0.02}],
+    )
+    manifest = {
+        "protocol_id": "core13_v2_full_reset_20260522",
+        "data_cutoff_date": "2026-05-20",
+        "data_mode": "availability_mask",
+        "return_source": "adj_nav",
+        "valuation_source": "adj_nav",
+        "reward_return_source": "adj_nav",
+        "metrics_return_source": "adj_nav",
+        "execution_price_source": "ohlcv",
+        "valuation_execution_split": True,
+        "reward_valuation_split": True,
+        "rankable_in_unified_table": True,
+        "diagnostic_status": "formal",
+        "availability_mask_contract_passed": True,
+        "unavailable_asset_weight_abs_max": 0.0,
+        "frozen_or_imputed_valuation_count": 0,
+        "daily_returns_finite": True,
+        "daily_nav_finite": True,
+        "run_name": "formal_run",
+        "experiment_type": "baseline_comparison",
+        "seed": 42,
+    }
+    (formal_run / "logs" / "run_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    diagnostic_manifest = dict(manifest)
+    diagnostic_manifest.update({"run_name": "diagnostic_run", "protocol_id": "legacy17"})
+    (diagnostic_run / "logs" / "run_manifest.json").write_text(json.dumps(diagnostic_manifest), encoding="utf-8")
+
+    outputs = aggregate_paper_results(
+        [formal_run, diagnostic_run],
+        tmp_path / "paper",
+        required_protocol_id="core13_v2_full_reset_20260522",
+        required_data_cutoff_date="2026-05-20",
+        require_formal_manifest=True,
+        require_availability_mask_contract=True,
+    )
+
+    main = pd.read_csv(outputs["paper_main_comparison"])
+    diagnostic = pd.read_csv(outputs["paper_diagnostic_comparison"])
+    status = json.loads(outputs["diagnostic_status"].read_text(encoding="utf-8"))
+    manifest = json.loads(outputs["paper_aggregate_manifest"].read_text(encoding="utf-8"))
+    assert set(main["paper_model_id"]) == {"main"}
+    assert "legacy" in set(diagnostic["paper_model_id"])
+    assert "protocol_mismatch" in set(diagnostic["reason"])
+    assert status["status"] == "completed_with_diagnostics"
+    assert manifest["formal_filter"]["require_formal_manifest"] is True
+    assert outputs["source_run_dirs"].read_text(encoding="utf-8").count("\n") == 2
+
+
+def test_paper_aggregate_excludes_explicit_paper_models(tmp_path):
+    run_dir = _run_dir(
+        tmp_path,
+        "formal_run",
+        [
+            {"model_name": "promoted_model", "rankable_in_unified_table": True, "sharpe": 1.0},
+            {"model_name": "unpromoted_model", "rankable_in_unified_table": True, "sharpe": 9.0},
+        ],
+        [
+            {"date": "2024-01-02", "model_name": "promoted_model", "net_return": 0.01},
+            {"date": "2024-01-03", "model_name": "promoted_model", "net_return": 0.02},
+            {"date": "2024-01-02", "model_name": "unpromoted_model", "net_return": 0.03},
+            {"date": "2024-01-03", "model_name": "unpromoted_model", "net_return": 0.04},
+        ],
+    )
+
+    outputs = aggregate_paper_results(
+        [run_dir],
+        tmp_path / "paper",
+        benchmark_model="promoted_model",
+        exclude_models=["unpromoted_model"],
+    )
+
+    main = pd.read_csv(outputs["paper_main_comparison"])
+    seed_summary = pd.read_csv(outputs["paper_seed_summary"])
+    manifest = json.loads(outputs["paper_aggregate_manifest"].read_text(encoding="utf-8"))
+    assert set(main["paper_model_id"]) == {"promoted_model"}
+    assert set(seed_summary["paper_model_id"]) == {"promoted_model"}
+    assert manifest["exclude_models"] == ["unpromoted_model"]
+
+
 def test_closest_hybrid_figure_source_uses_only_rankable_platform_rows(tmp_path):
     trainable_ids = ("ppo_dqn_hierarchical_reimplementation", *HYBRID_CHILDREN)
     rows = [

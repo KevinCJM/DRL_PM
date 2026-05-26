@@ -16,6 +16,7 @@ FULL_REPRODUCTION_SEQUENCE: tuple[str, ...] = (
     "ablation",
     "input_matrix_ablation",
     "pca_ablation",
+    "kernel_size_ablation",
     "reward_ablation",
     "transaction_cost_sensitivity",
     "asset_universe_sensitivity",

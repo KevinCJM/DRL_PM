@@ -22,6 +22,9 @@ REQUIRED_WIDE_PATH_KEYS: dict[str, str] = {
     "vol": "wide_vol_path",
     "turnover_rate": "wide_turnover_rate_path",
 }
+OPTIONAL_WIDE_PATH_KEYS: dict[str, str] = {
+    "adj_nav": "wide_adj_nav_path",
+}
 ASSET_UNIVERSE_COLUMNS = {
     "ts_code",
     "symbol",
@@ -117,6 +120,11 @@ def resolve_required_paths(config: Mapping[str, Any]) -> RequiredDataPaths:
         name: assert_path_allowed(data_config[key], whitelist, f"data.{key}")
         for name, key in REQUIRED_WIDE_PATH_KEYS.items()
     }
+    use_optional_valuation = _valuation_split_requested(config)
+    for name, key in OPTIONAL_WIDE_PATH_KEYS.items():
+        value = data_config.get(key)
+        if value is not None and use_optional_valuation:
+            wide[name] = assert_path_allowed(value, whitelist, f"data.{key}")
     metrics_path = None
     if _metrics_factory_enabled(config):
         metrics_path = assert_path_allowed(
@@ -144,6 +152,12 @@ def resolve_required_paths(config: Mapping[str, Any]) -> RequiredDataPaths:
             "data.metrics_manifest_path",
         ),
     )
+
+
+def _valuation_split_requested(config: Mapping[str, Any]) -> bool:
+    governance = config.get("data_governance", {}) if isinstance(config.get("data_governance"), Mapping) else {}
+    source = str(governance.get("valuation_source") or governance.get("return_source") or "").lower()
+    return bool(governance.get("valuation_execution_split", False) or source == "adj_nav")
 
 
 def assert_required_paths_exist(required_paths: RequiredDataPaths) -> None:
@@ -366,6 +380,59 @@ def build_liquidity_manifest(
     }
 
 
+def apply_date_policy(
+    panel: pd.DataFrame,
+    wide: dict[str, pd.DataFrame],
+    metrics_features: pd.DataFrame | None,
+    availability_mask: pd.DataFrame,
+    availability_reason: pd.DataFrame | None,
+    data_config: Mapping[str, Any],
+) -> tuple[pd.DataFrame, dict[str, pd.DataFrame], pd.DataFrame | None, pd.DataFrame, pd.DataFrame | None, dict[str, Any]]:
+    date_index = pd.DatetimeIndex(wide["close"].index)
+    start_date = _optional_timestamp(data_config.get("start_date"), "data.start_date")
+    end_date = _optional_timestamp(data_config.get("end_date"), "data.end_date")
+    if start_date is not None and end_date is not None and start_date > end_date:
+        raise DataContractError("ERR_DATA_NO_COMMON_HISTORY", "ERR_DATA_NO_COMMON_HISTORY: data.start_date > data.end_date")
+
+    keep = pd.Series(True, index=date_index)
+    if start_date is not None:
+        keep &= date_index >= start_date
+    if end_date is not None:
+        keep &= date_index <= end_date
+
+    strict_common = bool(data_config.get("strict_common_history_mode", False))
+    if strict_common:
+        common_available = availability_mask.reindex(index=date_index).all(axis=1)
+        keep &= common_available
+
+    selected_dates = pd.DatetimeIndex(date_index[keep.to_numpy(dtype=bool)])
+    if selected_dates.empty:
+        raise DataContractError("ERR_DATA_NO_COMMON_HISTORY", "ERR_DATA_NO_COMMON_HISTORY: no common available dates")
+
+    filtered_wide = {name: frame.reindex(index=selected_dates) for name, frame in wide.items()}
+    filtered_availability = availability_mask.reindex(index=selected_dates)
+    filtered_reason = None if availability_reason is None else availability_reason.reindex(index=selected_dates)
+
+    filtered_panel = panel.copy()
+    if "trade_date" in filtered_panel.columns:
+        filtered_panel = filtered_panel.loc[filtered_panel["trade_date"].isin(selected_dates)].copy()
+
+    filtered_metrics = metrics_features
+    if filtered_metrics is not None and "date" in filtered_metrics.columns:
+        filtered_metrics = filtered_metrics.loc[filtered_metrics["date"].isin(selected_dates)].copy()
+
+    manifest = {
+        "date_start": selected_dates[0].strftime("%Y-%m-%d"),
+        "date_end": selected_dates[-1].strftime("%Y-%m-%d"),
+        "date_count": int(len(selected_dates)),
+        "configured_start_date": _date_or_none(start_date),
+        "configured_end_date": _date_or_none(end_date),
+        "strict_common_history_mode": strict_common,
+        "all_assets_available_each_date": bool(filtered_availability.all(axis=1).all()),
+    }
+    return filtered_panel, filtered_wide, filtered_metrics, filtered_availability.astype(bool), filtered_reason, manifest
+
+
 def load_market_dataset(config: Mapping[str, Any]) -> MarketDatasetBundle:
     required_paths = resolve_required_paths(config)
     assert_required_paths_exist(required_paths)
@@ -379,6 +446,14 @@ def load_market_dataset(config: Mapping[str, Any]) -> MarketDatasetBundle:
     panel = load_panel(required_paths.panel)
     metrics_features = load_metrics_features(required_paths)
     availability_mask, availability_reason = build_availability(asset_universe, wide, canonical_asset_order)
+    panel, wide, metrics_features, availability_mask, availability_reason, date_manifest = apply_date_policy(
+        panel,
+        wide,
+        metrics_features,
+        availability_mask,
+        availability_reason,
+        data_config,
+    )
     liquidity_manifest = build_liquidity_manifest(wide, canonical_asset_order, config)
     return MarketDatasetBundle(
         asset_universe=asset_universe,
@@ -394,6 +469,20 @@ def load_market_dataset(config: Mapping[str, Any]) -> MarketDatasetBundle:
             "asset_count": len(canonical_asset_order),
             "metrics_factory_enabled": metrics_features is not None,
             "availability_reason_inference": "field_based",
+            **date_manifest,
             **liquidity_manifest,
         },
     )
+
+
+def _optional_timestamp(value: Any, key_path: str) -> pd.Timestamp | None:
+    if value is None or value == "":
+        return None
+    timestamp = pd.to_datetime(value, errors="coerce")
+    if pd.isna(timestamp):
+        raise DataContractError("ERR_DATA_NO_COMMON_HISTORY", f"ERR_DATA_NO_COMMON_HISTORY: {key_path}")
+    return pd.Timestamp(timestamp)
+
+
+def _date_or_none(value: pd.Timestamp | None) -> str | None:
+    return None if value is None else value.strftime("%Y-%m-%d")

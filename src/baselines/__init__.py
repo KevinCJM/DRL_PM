@@ -2,10 +2,23 @@
 
 from src.baselines.base_strategy import BaseStrategy, TraditionalStrategyBase
 from src.baselines.buy_and_hold import BuyAndHoldStrategy
+from src.baselines.cage_eiie import (
+    CageEIIEDistributionalStrategy,
+    CageEIIEDistributionalNoCvarStrategy,
+    CageEIIEFixedRho25Strategy,
+    CageEIIEFixedRho50Strategy,
+    CageEIIEFixedRho75Strategy,
+    CageEIIEFrozenGateStrategy,
+    CageEIIEJointLightStrategy,
+    CageEIIEMultilevelGateStrategy,
+    CageEIIENoCvarStrategy,
+    CageEIIEStrategy,
+)
 from src.baselines.cnn_ppo_baseline import CNNPPOBaselineStrategy
 from src.baselines.equal_weight import EqualWeightStrategy
 from src.baselines.external_pgportfolio import PGPORTFOLIO_EXTERNAL_MODEL_NAME, external_pgportfolio_summary
 from src.baselines.fixed_ratio import FixedRatioStrategy
+from src.baselines.gt_rcpo_lite import GTRCPOLiteStrategy
 from src.baselines.hrp import HRPStrategy
 from src.baselines.hybrid_dqn_optimizer_reimplementation import (
     HybridDQNOptimizerEqualWeightStrategy,
@@ -32,14 +45,26 @@ from src.baselines.ppo_dqn_hierarchical_reimplementation import PPODQNHierarchic
 from src.baselines.ppo_baseline import PPOBaselineStrategy
 from src.baselines.risk_evaluation import RiskEvaluationStrategy
 from src.baselines.risk_parity import RiskParityStrategy
+from src.baselines.risk_aware_gt_rcpo import RiskAwareGTRCPOStrategy
 
 __all__ = [
     "BaseStrategy",
     "BuyAndHoldStrategy",
+    "CageEIIEDistributionalStrategy",
+    "CageEIIEDistributionalNoCvarStrategy",
+    "CageEIIEFixedRho25Strategy",
+    "CageEIIEFixedRho50Strategy",
+    "CageEIIEFixedRho75Strategy",
+    "CageEIIEFrozenGateStrategy",
+    "CageEIIEJointLightStrategy",
+    "CageEIIEMultilevelGateStrategy",
+    "CageEIIENoCvarStrategy",
+    "CageEIIEStrategy",
     "CNNPPOBaselineStrategy",
     "EqualWeightStrategy",
     "PGPORTFOLIO_EXTERNAL_MODEL_NAME",
     "FixedRatioStrategy",
+    "GTRCPOLiteStrategy",
     "HRPStrategy",
     "HybridDQNOptimizerEqualWeightStrategy",
     "HybridDQNOptimizerMarkowitzMeanVarianceStrategy",
@@ -63,6 +88,7 @@ __all__ = [
     "PPOBaselineStrategy",
     "external_pgportfolio_summary",
     "RiskEvaluationStrategy",
+    "RiskAwareGTRCPOStrategy",
     "RiskParityStrategy",
     "TraditionalStrategyBase",
 ]

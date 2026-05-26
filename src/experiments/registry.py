@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
@@ -10,9 +11,19 @@ import pandas as pd
 
 from src.baselines import (
     BuyAndHoldStrategy,
+    CageEIIEDistributionalStrategy,
+    CageEIIEDistributionalNoCvarStrategy,
+    CageEIIEFixedRho25Strategy,
+    CageEIIEFixedRho50Strategy,
+    CageEIIEFixedRho75Strategy,
+    CageEIIEFrozenGateStrategy,
+    CageEIIEJointLightStrategy,
+    CageEIIEMultilevelGateStrategy,
+    CageEIIENoCvarStrategy,
     CNNPPOBaselineStrategy,
     EqualWeightStrategy,
     FixedRatioStrategy,
+    GTRCPOLiteStrategy,
     HRPStrategy,
     HybridDQNOptimizerEqualWeightStrategy,
     HybridDQNOptimizerMarkowitzMeanVarianceStrategy,
@@ -34,6 +45,7 @@ from src.baselines import (
     PPODQNHierarchicalReimplementationStrategy,
     PPOBaselineStrategy,
     RiskEvaluationStrategy,
+    RiskAwareGTRCPOStrategy,
     RiskParityStrategy,
 )
 from src.baselines.bernoulli_gated_ppo import BernoulliGatedPPOStrategy
@@ -44,6 +56,7 @@ from src.envs.constraint_manager import ConstraintManager
 from src.envs.cost_model import CostModel
 from src.envs.portfolio_execution_core import PortfolioExecutionCore
 from src.experiments.pipeline import (
+    build_pipeline_artifacts,
     objective_metric,
     run_strategy_backtest,
     run_seed_stability_training,
@@ -166,6 +179,24 @@ DEEP_BASELINE_CLASSES = {
     "eiie_native": NativeEIIEStrategy,
     "pgportfolio_eiie_native": PGPortfolioEIIEStrategy,
     "ppo_dqn_hierarchical_reimplementation": PPODQNHierarchicalReimplementationStrategy,
+    "cage_eiie_frozen_gate": CageEIIEFrozenGateStrategy,
+    "cage_eiie_multilevel_gate": CageEIIEMultilevelGateStrategy,
+    "cage_eiie_distributional": CageEIIEDistributionalStrategy,
+    "cage_eiie_no_cvar": CageEIIENoCvarStrategy,
+    "cage_eiie_distributional_no_cvar": CageEIIEDistributionalNoCvarStrategy,
+    "cage_eiie_joint_light": CageEIIEJointLightStrategy,
+    "cage_eiie_fixed_rho_25": CageEIIEFixedRho25Strategy,
+    "cage_eiie_fixed_rho_50": CageEIIEFixedRho50Strategy,
+    "cage_eiie_fixed_rho_75": CageEIIEFixedRho75Strategy,
+    "graph_transformer_risk_constrained_actor_critic_lite": GTRCPOLiteStrategy,
+    "gt_rcpo_lite": GTRCPOLiteStrategy,
+    "risk_aware_graph_transformer_constrained_actor_critic": RiskAwareGTRCPOStrategy,
+    "ra_gt_rcpo_no_graph": RiskAwareGTRCPOStrategy,
+    "ra_gt_rcpo_no_transformer": RiskAwareGTRCPOStrategy,
+    "ra_gt_rcpo_no_cvar_constraint": RiskAwareGTRCPOStrategy,
+    "ra_gt_rcpo_no_cost_constraint": RiskAwareGTRCPOStrategy,
+    "ra_gt_rcpo_no_turnover_constraint": RiskAwareGTRCPOStrategy,
+    "ra_gt_rcpo_mlp_actor_critic": RiskAwareGTRCPOStrategy,
     "hybrid_dqn_optimizer_equal_weight": HybridDQNOptimizerEqualWeightStrategy,
     "hybrid_dqn_optimizer_markowitz_mean_variance": HybridDQNOptimizerMarkowitzMeanVarianceStrategy,
     "hybrid_dqn_optimizer_minimum_variance": HybridDQNOptimizerMinimumVarianceStrategy,
@@ -180,7 +211,7 @@ HYBRID_DQN_OPTIMIZER_CHILD_MODEL_NAMES = (
     "hybrid_dqn_optimizer_sharpe_maximization",
     "hybrid_dqn_optimizer_risk_parity",
 )
-ABLATION_TYPES = {"ablation", "input_matrix_ablation", "pca_ablation", "reward_ablation"}
+ABLATION_TYPES = {"ablation", "input_matrix_ablation", "pca_ablation", "kernel_size_ablation", "reward_ablation"}
 ABLATION_GUARD_TYPES = ABLATION_TYPES | {"auxiliary_task_sensitivity"}
 SENSITIVITY_TYPES = {
     "transaction_cost_sensitivity",
@@ -207,6 +238,7 @@ ABLATION_IGNORED_PATH_PREFIXES = (
     "registry.",
     "reproducibility.",
     "security.",
+    "data_governance.",
     "training.checkpoint_include_replay_buffer",
 )
 MATRIX_OUTPUT_NAMES = {
@@ -349,6 +381,13 @@ class HPOExperiment(BaseExperiment):
         split_override = getattr(self, "active_split", None)
         model_name = _active_hpo_model_name(self, trial_config)
         if model_name in DEEP_BASELINE_CLASSES:
+            artifacts = _cached_hpo_pipeline_artifacts(
+                self,
+                trial_config,
+                split_override=split_override,
+                params=getattr(trial, "params", {}),
+            )
+            artifact_kwargs = {"artifacts": artifacts} if artifacts is not None else {}
             result = run_strategy_backtest(
                 trial_config,
                 DEEP_BASELINE_CLASSES[model_name],
@@ -356,6 +395,7 @@ class HPOExperiment(BaseExperiment):
                 segment=validation_split,
                 run_dir=None if self.context.run_dir is None else str(self.context.run_dir / f"trial_{trial.number}"),
                 split_override=split_override,
+                **artifact_kwargs,
             )
         else:
             result = run_trained_model_experiment(
@@ -381,6 +421,13 @@ class HPOExperiment(BaseExperiment):
         final_label = str(getattr(self, "final_test_label", "final_test"))
         model_name = _active_hpo_model_name(self, final_config)
         if model_name in DEEP_BASELINE_CLASSES:
+            artifacts = _cached_hpo_pipeline_artifacts(
+                self,
+                final_config,
+                split_override=split_override,
+                params=getattr(best_trial, "params", {}),
+            )
+            artifact_kwargs = {"artifacts": artifacts} if artifacts is not None else {}
             result = run_strategy_backtest(
                 final_config,
                 DEEP_BASELINE_CLASSES[model_name],
@@ -388,6 +435,7 @@ class HPOExperiment(BaseExperiment):
                 segment=split,
                 run_dir=None if self.context.run_dir is None else str(self.context.run_dir / final_label),
                 split_override=split_override,
+                **artifact_kwargs,
             )
         else:
             result = run_trained_model_experiment(
@@ -457,6 +505,7 @@ class FullReproductionExperiment(BaseExperiment):
         "ablation",
         "input_matrix_ablation",
         "pca_ablation",
+        "kernel_size_ablation",
         "reward_ablation",
         "transaction_cost_sensitivity",
         "asset_universe_sensitivity",
@@ -726,6 +775,15 @@ def _ablation_variants(config: Mapping[str, Any], experiment_type: str) -> list[
                 for components in (16, 32, 64, 128)
             ],
         ]
+    if experiment_type == "kernel_size_ablation":
+        return [
+            _kernel_size_variant(config, "kernel_single_day_1x1", 1, 1),
+            _kernel_size_variant(config, "kernel_single_day_cross_asset_1x3", 1, 3),
+            _kernel_size_variant(config, "kernel_short_3x3", 3, 3),
+            _kernel_size_variant(config, "kernel_week_5x3", 5, 3),
+            _kernel_size_variant(config, "kernel_long_11x3", 11, 3),
+            _kernel_size_variant(config, "kernel_long_21x3", 21, 3),
+        ]
     if experiment_type == "reward_ablation":
         reward_modes = (
             "A0_raw_simple_return",
@@ -782,6 +840,21 @@ def _generic_component_ablation_variants(config: Mapping[str, Any]) -> list[dict
         _variant(config, "full_model", "experiment.type", "main_model", {}),
         _variant(config, "current", "experiment.type", "ablation", {}),
     ]
+
+
+def _kernel_size_variant(config: Mapping[str, Any], variant_id: str, time_kernel: int, asset_kernel: int) -> dict[str, Any]:
+    return _variant(
+        config,
+        variant_id,
+        "model.encoder.kernel_size",
+        f"{time_kernel}x{asset_kernel}",
+        {
+            "model.default_encoder": "cnn",
+            "model.encoder.type": "cnn",
+            "model.encoder.kernel_size_time": int(time_kernel),
+            "model.encoder.kernel_size_asset": int(asset_kernel),
+        },
+    )
 
 
 def _sensitivity_variants(config: Mapping[str, Any], experiment_type: str) -> list[dict[str, Any]]:
@@ -901,7 +974,7 @@ def _asset_pools_from_universe(config: Mapping[str, Any]) -> list[str]:
     if path is None:
         return []
     whitelist = _path_whitelist(config)
-    path_obj = assert_path_allowed(path, whitelist, "data.asset_universe_path")
+    path_obj = _asset_universe_path(path, whitelist)
     try:
         frame = pd.read_csv(path_obj)
     except Exception:
@@ -911,6 +984,15 @@ def _asset_pools_from_universe(config: Mapping[str, Any]) -> list[str]:
     if "status" in frame.columns:
         frame = frame.loc[frame["status"].astype(str).eq("ok")]
     return sorted({str(value) for value in frame["pool"].dropna().tolist() if str(value)})
+
+
+def _asset_universe_path(path: Any, whitelist: Sequence[str | Path]) -> Path:
+    raw_path = Path(str(path))
+    if not raw_path.is_absolute():
+        cwd_path = (Path.cwd() / raw_path).resolve()
+        if cwd_path.exists():
+            return assert_path_allowed(cwd_path, whitelist, "data.asset_universe_path")
+    return assert_path_allowed(path, whitelist, "data.asset_universe_path")
 
 
 def _string_list(value: Any) -> list[str]:
@@ -977,6 +1059,63 @@ MODULE_MODEL_NAMES = {
     "distributional_cvar_analysis": "distributional_cvar_gated_ppo",
     "partial_rebalance_analysis": "partial_rebalance_gated_ppo",
 }
+PIPELINE_ARTIFACT_HPO_PARAM_PREFIXES = (
+    "data.",
+    "data_governance.",
+    "feature_matrix.",
+    "feature_reduction.",
+    "split.",
+    "splits.",
+    "env.window_size",
+)
+PIPELINE_ARTIFACT_CONFIG_KEYS = (
+    "data",
+    "data_governance",
+    "env",
+    "feature_matrix",
+    "feature_reduction",
+    "security",
+    "split",
+    "splits",
+)
+
+
+def _cached_hpo_pipeline_artifacts(
+    experiment: HPOExperiment,
+    config: Mapping[str, Any],
+    *,
+    split_override: Any | None,
+    params: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    if split_override is not None or _hpo_params_affect_pipeline_artifacts(params):
+        return None
+    cache = getattr(experiment, "_hpo_pipeline_artifact_cache", None)
+    if cache is None:
+        cache = {}
+        setattr(experiment, "_hpo_pipeline_artifact_cache", cache)
+    key = _pipeline_artifact_cache_key(config)
+    if key not in cache:
+        cache[key] = build_pipeline_artifacts(config)
+    return cache[key]
+
+
+def _hpo_params_affect_pipeline_artifacts(params: Mapping[str, Any]) -> bool:
+    for name in params:
+        path = str(name)
+        if "." not in path:
+            path = _default_hpo_param_path(path)
+        if path.startswith(PIPELINE_ARTIFACT_HPO_PARAM_PREFIXES):
+            return True
+    return False
+
+
+def _pipeline_artifact_cache_key(config: Mapping[str, Any]) -> str:
+    relevant = {
+        key: deepcopy(config.get(key))
+        for key in PIPELINE_ARTIFACT_CONFIG_KEYS
+        if key in config
+    }
+    return json.dumps(relevant, sort_keys=True, default=str, ensure_ascii=False)
 
 
 def _config_for_module_model(config: Mapping[str, Any], experiment_type: str, module_name: str) -> dict[str, Any]:
@@ -1090,6 +1229,12 @@ def _ablation_family(experiment_type: str, path: str) -> str:
         return "feature_matrix.input_matrix_id" if path == "feature_matrix.input_matrix_id" else "invalid"
     if experiment_type == "pca_ablation":
         return "feature_reduction.pca" if path.startswith("feature_reduction.pca.") else "invalid"
+    if experiment_type == "kernel_size_ablation":
+        if path in {"model.default_encoder", "model.encoder.type"}:
+            return "model.encoder.kernel_size"
+        if path in {"model.encoder.kernel_size_time", "model.encoder.kernel_size_asset"}:
+            return "model.encoder.kernel_size"
+        return "invalid"
     if experiment_type == "reward_ablation":
         if path.startswith("reward.") or path.startswith("reward_ablation."):
             return "reward"
@@ -1126,6 +1271,8 @@ def _ablation_output_name(experiment_type: str) -> str:
         return "input_matrix_ablation_results"
     if experiment_type == "pca_ablation":
         return "PCA_ablation_results"
+    if experiment_type == "kernel_size_ablation":
+        return "kernel_size_ablation_results"
     if experiment_type == "reward_ablation":
         return "reward_ablation_results"
     return "ablation_results"

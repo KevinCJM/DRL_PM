@@ -1,5 +1,29 @@
 experiment:
   type: walk_forward
+data:
+  asset_universe_path: data/processed/core13_asset_universe.csv
+  panel_path: data/processed/core13_etf_lof_daily_panel.parquet
+  wide_open_path: data/processed/core13_wide_open.parquet
+  wide_high_path: data/processed/core13_wide_high.parquet
+  wide_low_path: data/processed/core13_wide_low.parquet
+  wide_close_path: data/processed/core13_wide_close.parquet
+  wide_adj_nav_path: data/processed/core13_wide_adj_nav_tushare.parquet
+  wide_pre_close_path: data/processed/core13_wide_pre_close.parquet
+  wide_pct_chg_path: data/processed/core13_wide_pct_chg.parquet
+  wide_log_return_path: data/processed/core13_wide_log_return.parquet
+  wide_amount_path: data/processed/core13_wide_amount.parquet
+  wide_vol_path: data/processed/core13_wide_vol.parquet
+  wide_turnover_rate_path: data/processed/core13_wide_turnover_rate.parquet
+  all_metrics_features_path: data/metrics_factory/core13_all_metrics_features.parquet
+  download_manifest_path: data/reports/core13_data_download_manifest.json
+  metrics_manifest_path: data/reports/core13_metrics_factory_manifest.json
+  metrics_factory:
+    enabled: true
+    all_metrics_features_path: data/metrics_factory/core13_all_metrics_features.parquet
+  start_date: '2014-01-01'
+  end_date: null
+  data_mode: availability_mask
+  strict_common_history_mode: false
 split:
   mode: walk_forward
   walk_forward:
@@ -9,11 +33,33 @@ split:
     step_months: 6
 reproducibility:
   seed: 42
-  seeds: [42, 123, 2024, 3407, 9999]
+  seeds:
+  - 42
+  - 123
+  - 2024
+  - 3407
+  - 9999
 training:
   checkpoint_include_replay_buffer: false
 output:
   run_name: P6_walk_forward
 security:
   path_whitelist:
-    - /Users/chenjunming/Desktop/DRL_PM
+  - /Users/chenjunming/Desktop/DRL_PM
+data_governance:
+  return_source: adj_nav
+  valuation_source: adj_nav
+  reward_return_source: adj_nav
+  metrics_return_source: adj_nav
+  execution_price_source: ohlcv
+  valuation_table: core13_adj_nav
+  execution_price_table: core13_ohlcv
+  valuation_execution_split: true
+  reward_valuation_split: true
+protocol:
+  protocol_id: core13_v2_full_reset_20260522
+  asset_universe_id: core13_v2
+  data_cutoff_date: '2026-05-20'
+rankability:
+  rankable_in_unified_table: false
+  diagnostic_status: diagnostic

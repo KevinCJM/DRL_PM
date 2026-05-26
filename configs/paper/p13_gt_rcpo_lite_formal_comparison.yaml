@@ -1,0 +1,58 @@
+experiment:
+  type: baseline_comparison
+data_governance:
+  return_source: adj_nav
+  valuation_source: adj_nav
+  reward_return_source: adj_nav
+  metrics_return_source: adj_nav
+  execution_price_source: ohlcv
+  valuation_table: core13_adj_nav
+  execution_price_table: core13_ohlcv
+  valuation_execution_split: true
+  reward_valuation_split: true
+baselines:
+  traditional:
+  - equal_weight
+  deep: []
+  native_rl:
+    enabled_models:
+    - graph_transformer_risk_constrained_actor_critic_lite
+    - cage_eiie_distributional
+    - eiie_native
+    - ppo_dqn_hierarchical_reimplementation
+    epochs: 2
+    max_train_steps: 128
+    max_validation_steps: 128
+    max_gradient_updates_per_epoch: 16
+gt_rcpo_lite:
+  enabled: true
+cage_eiie:
+  enabled: true
+hpo:
+  enabled: false
+new_model_protocol:
+  phase: P14_new_model_final_comparison
+  model_extension_id: core13_v2_p12_p13_20260524
+  selection_split: validation
+  test_used_for_model_selection: false
+training:
+  epochs: 2
+  max_train_steps: 128
+  max_validation_steps: 128
+  checkpoint_include_replay_buffer: false
+reproducibility:
+  seed: 42
+  seeds:
+  - 42
+output:
+  run_name: P13_gt_rcpo_lite_formal_comparison
+protocol:
+  protocol_id: core13_v2_full_reset_20260522
+  asset_universe_id: core13_v2
+  data_cutoff_date: '2026-05-20'
+rankability:
+  rankable_in_unified_table: true
+  diagnostic_status: formal
+security:
+  path_whitelist:
+  - /Users/chenjunming/Desktop/DRL_PM

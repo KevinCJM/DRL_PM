@@ -58,6 +58,21 @@ def test_encoder_factory():
     encoder = EncoderFactory.create(config)
     assert isinstance(encoder, CNNAttentionEncoder)
 
+def test_cnn_encoder_kernel_size_variants():
+    x = torch.randn(2, 6, 60, 13)
+    for time_kernel, asset_kernel in ((1, 1), (1, 3), (3, 3), (5, 3), (11, 3), (21, 3)):
+        encoder = CNNEncoder(
+            n_features=6,
+            window_size=60,
+            latent_dim=32,
+            kernel_size_time=time_kernel,
+            kernel_size_asset=asset_kernel,
+        )
+        assert encoder(x).shape == (2, 32)
+
+    with pytest.raises(ValueError, match="ERR_MODEL_CONFIG_INVALID"):
+        CNNEncoder(n_features=6, window_size=60, kernel_size_time=0)
+
 def test_auxiliary_loss_contract():
     batch_size = 4
     latent_dim = 256

@@ -116,6 +116,7 @@ class MarketImageDataset:
             feature: self._feature_frame(feature)
             for feature in self.feature_cols
         }
+        self._feature_tensor = self._feature_tensor_from_frames(self._feature_frames)
         self.market_images: np.ndarray | None = None
         if materialize_market_images:
             self.materialize()
@@ -169,16 +170,19 @@ class MarketImageDataset:
         frame.index = pd.DatetimeIndex(pd.to_datetime(frame.index))
         return frame.reindex(index=self._dates, columns=self.asset_order)
 
+    def _feature_tensor_from_frames(self, feature_frames: Mapping[str, pd.DataFrame]) -> np.ndarray:
+        return np.stack(
+            [
+                feature_frames[feature].to_numpy(dtype=self.dtype, copy=True)
+                for feature in self.feature_cols
+            ],
+            axis=0,
+        )
+
     def _build_market_image(self, date: pd.Timestamp) -> np.ndarray:
         end_position = self._date_positions[pd.Timestamp(date)]
-        window_dates = self._dates[end_position - self.window_size + 1 : end_position + 1]
-        image = np.empty((len(self.feature_cols), self.window_size, len(self.asset_order)), dtype=self.dtype)
-        for feature_index, feature in enumerate(self.feature_cols):
-            image[feature_index] = self._feature_frames[feature].reindex(
-                index=window_dates,
-                columns=self.asset_order,
-            ).to_numpy(dtype=self.dtype, copy=True)
-        return image
+        start_position = end_position - self.window_size + 1
+        return self._feature_tensor[:, start_position : end_position + 1, :].copy()
 
 
 @dataclass(frozen=True)

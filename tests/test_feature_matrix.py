@@ -550,6 +550,8 @@ def test_lazy_market_image_index_alignment():
             dtype=np.float32,
         ),
     )
+    image[0, 0, 0] = -999.0
+    assert dataset[0][0, 0, 0] == pytest.approx(0.0)
     np.testing.assert_array_equal(dataset[pd.Timestamp("2024-01-05")], dataset[1])
 
     materialized = dataset.materialize()

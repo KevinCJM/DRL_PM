@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -258,6 +259,7 @@ class BacktestEngine:
                 "action": action,
                 "execution_result": execution_result,
                 "execution_state": execution_state,
+                "final_action": final_action,
                 "reward": reward,
                 "reward_info": reward_info,
                 "metadata": record_metadata,
@@ -353,6 +355,7 @@ class BacktestEngine:
                     "action": action,
                     "execution_result": execution_result,
                     "execution_state": execution_state,
+                    "final_action": pending_action.rebalance_action,
                     "reward": reward,
                     "reward_info": reward_info,
                     "metadata": record_metadata,
@@ -504,6 +507,20 @@ class BacktestEngine:
             "portfolio_currency": str(self.portfolio_config.get("currency", "")),
             "execution_price": flags.get("execution_price", self.execution_config.get("execution_price")),
             "execution_price_type": flags.get("execution_price_type", _execution_price_type(self.execution_config)),
+            "valuation_source": flags.get("valuation_source", self.config["data_governance"].get("valuation_source")),
+            "return_source": flags.get("return_source", self.config["data_governance"].get("return_source")),
+            "valuation_execution_split": bool(
+                flags.get(
+                    "valuation_execution_split",
+                    self.config["data_governance"].get("valuation_execution_split", False),
+                )
+            ),
+            "reward_valuation_split": bool(
+                flags.get(
+                    "reward_valuation_split",
+                    self.config["data_governance"].get("reward_valuation_split", False),
+                )
+            ),
             "delayed_action_execution": bool(
                 flags.get("delayed_action_execution", self.execution_config.get("delayed_action_execution", False))
             ),
@@ -530,6 +547,7 @@ def _action_for_step(
     if not scheduler_allowed and not first_trade and not _requires_daily_diagnostics(strategy):
         return PortfolioAction(portfolio_state.current_weights.copy(), 0, 0.0, {})
     try:
+        _set_strategy_decision_context(strategy, decision_state, portfolio_state, scheduler_allowed, first_trade)
         action = strategy.compute_target_weights(decision_state, portfolio_state)
         if not isinstance(action, PortfolioAction):
             raise DataContractError(
@@ -541,6 +559,26 @@ def _action_for_step(
         if _is_contract_error(exc):
             raise
         return _fallback_action(decision_state, exc)
+
+
+def _set_strategy_decision_context(
+    strategy: Any,
+    decision_state: DecisionMarketState,
+    portfolio_state: PortfolioState,
+    scheduler_allowed: bool,
+    first_trade: bool,
+) -> None:
+    setter = getattr(strategy, "set_decision_context", None)
+    if not callable(setter):
+        return
+    scheduler_allowed_rebalance = bool(scheduler_allowed or first_trade)
+    setter(
+        scheduler_allowed_rebalance=scheduler_allowed_rebalance,
+        scheduler_pre_allowed=bool(scheduler_allowed),
+        first_trade=bool(first_trade),
+        decision_date=pd.Timestamp(decision_state.decision_date),
+        portfolio_step_index=int(portfolio_state.step_index),
+    )
 
 
 def _fallback_action(decision_state: DecisionMarketState, exc: Exception) -> PortfolioAction:
@@ -894,6 +932,7 @@ def _daily_rebalance_record(context: Mapping[str, Any], final_action: int) -> di
 
 def _baseline_diagnostics_record(context: Mapping[str, Any]) -> dict[str, Any]:
     action = context["action"]
+    result = context["execution_result"]
     state = context["execution_state"]
     metadata = context["metadata"]
     action_info = dict(action.action_info)
@@ -906,7 +945,27 @@ def _baseline_diagnostics_record(context: Mapping[str, Any]) -> dict[str, Any]:
         "paper_model_id": action_info.get("paper_model_id"),
         "seed": metadata["seed"],
         "fold_id": metadata["fold_id"],
+        "rebalance_action": int(context.get("final_action", action.rebalance_action)),
+        "rebalance_intensity": float(action.rebalance_intensity),
+        "target_weights_json": _weights_json(action.target_weights),
+        "candidate_weights_json": action_info.get("candidate_weights_json", _weights_json(action.target_weights)),
+        "executed_weights_json": _weights_json(result.executed_weights),
+        "pre_execution_drifted_weights_json": _weights_json(result.pre_execution_drifted_weights),
+        "estimated_turnover": result.estimated_turnover,
+        "realized_turnover": result.realized_turnover,
+        "turnover": result.turnover,
+        "estimated_cost": result.estimated_cost,
+        "realized_cost": result.realized_cost,
+        "total_transaction_cost": result.total_transaction_cost,
+        "net_return": result.net_return,
+        "portfolio_log_return": result.portfolio_log_return,
+        "nav": result.nav_next,
     }
+
+
+def _weights_json(weights: Any) -> str:
+    array = np.asarray(weights, dtype=float).reshape(-1)
+    return json.dumps([float(value) for value in array], separators=(",", ":"))
 
 
 def _has_paper_model_id(value: Any) -> bool:

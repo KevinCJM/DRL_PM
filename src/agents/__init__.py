@@ -1,6 +1,7 @@
 """Agent training contracts."""
 
 from src.agents.dqn_agent import DQNAgent, DQNAgentConfig
+from src.agents.constrained_actor_critic_agent import ConstrainedActorCriticAgent
 from src.agents.distributional_agent import DistributionalAgent, DistributionalCVaRAgent
 from src.agents.hybrid_agent import HybridAgent, HybridAgentConfig
 from src.agents.partial_rebalance_agent import PartialRebalanceAgent, PartialRebalanceGatedAgent
@@ -11,6 +12,7 @@ from src.agents.uncertainty_agent import UncertaintyAgent, UncertaintyAwareAgent
 __all__ = [
     "DQNAgent",
     "DQNAgentConfig",
+    "ConstrainedActorCriticAgent",
     "DistributionalAgent",
     "DistributionalCVaRAgent",
     "HybridAgent",

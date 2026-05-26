@@ -50,6 +50,7 @@ def test_registry_all_experiment_types(tmp_path):
         "ablation": AblationExperiment,
         "input_matrix_ablation": AblationExperiment,
         "pca_ablation": AblationExperiment,
+        "kernel_size_ablation": AblationExperiment,
         "reward_ablation": AblationExperiment,
         "walk_forward": WalkForwardExperiment,
         "transaction_cost_sensitivity": SensitivityExperiment,
@@ -71,6 +72,7 @@ def test_registry_all_experiment_types(tmp_path):
         "ablation": "ablation_results",
         "input_matrix_ablation": "input_matrix_ablation_results",
         "pca_ablation": "PCA_ablation_results",
+        "kernel_size_ablation": "kernel_size_ablation_results",
         "reward_ablation": "reward_ablation_results",
         "walk_forward": "walk_forward_results",
         "transaction_cost_sensitivity": "transaction_cost_sensitivity",
@@ -427,6 +429,9 @@ def test_hpo_equal_budget_runs_all_trainable_models(tmp_path, monkeypatch):
     config["hpo"]["equal_budget_across_models"] = True
     config["hpo"]["trainable_models"] = ["full_dqn_gated_multitask_cnn_ppo", "ppo_baseline"]
     config["hpo"]["direction"] = "maximize"
+    config["hpo"]["search_space"] = {
+        "ppo_lr": {"type": "float", "low": 0.0001, "high": 0.001, "log": True, "rationale": "paper budget"},
+    }
     config["output"]["run_name"] = "hpo_equal_budget"
     experiment = ExperimentRegistry().create_experiment(config, device="cpu", run_dir=tmp_path / "hpo_equal_budget")
     calls = []
@@ -519,9 +524,13 @@ def test_hpo_equal_budget_runs_all_trainable_models(tmp_path, monkeypatch):
     ]
     persisted_trials = pd.read_csv(tmp_path / "hpo_equal_budget" / "logs" / "hpo_trials.csv")
     assert set(persisted_trials["model_name"]) == {"full_dqn_gated_multitask_cnn_ppo", "ppo_baseline"}
+    search_manifest = pd.read_csv(tmp_path / "hpo_equal_budget" / "logs" / "hpo_search_space_manifest.csv")
+    assert set(search_manifest["model_name"]) == {"full_dqn_gated_multitask_cnn_ppo", "ppo_baseline"}
+    assert search_manifest["param_name"].tolist() == ["ppo_lr", "ppo_lr"]
+    assert search_manifest["log_scale"].tolist() == [True, True]
 
 
-def test_hpo_equal_budget_excludes_proxy_when_native_only(tmp_path):
+def test_hpo_explicit_trainable_models_are_not_filtered_by_native_only(tmp_path):
     config = _config(tmp_path, "main_model")
     config["hpo"]["trainable_models"] = [
         "full_dqn_gated_multitask_cnn_ppo",
@@ -538,7 +547,11 @@ def test_hpo_equal_budget_excludes_proxy_when_native_only(tmp_path):
     assert run_experiment._hpo_trainable_models(config) == [
         "full_dqn_gated_multitask_cnn_ppo",
         *HYBRID_DQN_OPTIMIZER_CHILD_MODEL_NAMES,
+        "ppo_proxy",
+        "ppo_baseline",
+        "pgportfolio_original_external",
         "pgportfolio_eiie_native",
+        "equal_weight",
     ]
     assert all(run_experiment._is_native_hpo_trainable_model(name) for name in HYBRID_DQN_OPTIMIZER_CHILD_MODEL_NAMES)
     assert run_experiment._is_native_hpo_trainable_model(HYBRID_DQN_OPTIMIZER_ALIAS) is False
@@ -587,9 +600,12 @@ def test_m6_t5_formal_hpo_config_uses_child_budget_units():
     assert config["long_running"] is True
 
 
-def test_hpo_native_only_fails_when_no_rankable_native_model(tmp_path):
+def test_hpo_native_only_fails_for_inferred_scope_when_no_rankable_native_model(tmp_path):
     config = _config(tmp_path, "main_model")
-    config["hpo"]["trainable_models"] = ["ppo_proxy", "pgportfolio_original_external", "equal_weight"]
+    config["hpo"]["trainable_models"] = []
+    config["model"]["name"] = "equal_weight"
+    config["baselines"]["deep"] = ["ppo_proxy"]
+    config["baselines"]["native_rl"] = {"enabled_models": []}
     config["hpo"]["native_only"] = True
 
     with pytest.raises(ConfigError, match="ERR_HPO_NO_NATIVE_TRAINABLE_MODEL"):
@@ -694,6 +710,46 @@ def test_hpo_native_baseline_final_test_uses_active_split(tmp_path, monkeypatch)
             "split_override": active_split,
         }
     ]
+
+
+def test_hpo_deep_baseline_reuses_pipeline_artifacts_for_model_params(tmp_path, monkeypatch):
+    config = _config(tmp_path, "main_model")
+    config["hpo"]["enabled"] = True
+    config["hpo"]["metric"] = "validation_metric"
+    experiment = ExperimentRegistry().create_experiment(config, device="cpu", run_dir=tmp_path / "hpo_cached")
+    setattr(experiment, "active_model_name", "cage_eiie_frozen_gate")
+    cached_artifacts = {"sentinel": object()}
+    artifact_build_calls = []
+    backtest_artifacts = []
+
+    def fake_build_pipeline_artifacts(config, split_override=None):
+        artifact_build_calls.append(split_override)
+        return cached_artifacts
+
+    def fake_run_strategy_backtest(
+        config,
+        strategy_factory,
+        *,
+        model_name,
+        segment="test",
+        run_dir=None,
+        split_override=None,
+        artifacts=None,
+    ):
+        assert model_name == "cage_eiie_frozen_gate"
+        assert split_override is None
+        backtest_artifacts.append(artifacts)
+        return {"status": "completed", "metrics": {"validation_metric": 1.0}}
+
+    monkeypatch.setattr("src.experiments.registry.build_pipeline_artifacts", fake_build_pipeline_artifacts)
+    monkeypatch.setattr("src.experiments.registry.run_strategy_backtest", fake_run_strategy_backtest)
+
+    trial_params = {"cage_eiie.lambda_turnover": 1.0}
+    experiment.run_trial(SimpleNamespace(number=0, params=trial_params), "train", "validation")
+    experiment.run_trial(SimpleNamespace(number=1, params=trial_params), "train", "validation")
+
+    assert artifact_build_calls == [None]
+    assert backtest_artifacts == [cached_artifacts, cached_artifacts]
 
 
 def test_walk_forward_hpo_runs_independent_hpo_per_fold(tmp_path, monkeypatch):
@@ -876,6 +932,23 @@ def test_ablation_single_switch_guard(tmp_path):
     assert input_matrix_experiment.ablation_id == "input_matrix_ablation.feature_matrix.input_matrix_id"
     assert input_matrix_experiment.changed_key_path == "feature_matrix.input_matrix_id"
 
+    metadata_config = _config(tmp_path, "input_matrix_ablation")
+    metadata_config["feature_matrix"]["input_matrix_id"] = "M0"
+    metadata_config["data_governance"].update(
+        {
+            "return_source": "adj_nav",
+            "valuation_source": "adj_nav",
+            "reward_return_source": "adj_nav",
+            "metrics_return_source": "adj_nav",
+            "execution_price_source": "ohlcv",
+            "valuation_execution_split": True,
+            "reward_valuation_split": True,
+        }
+    )
+    metadata_experiment = registry.create_experiment(metadata_config)
+    assert metadata_experiment.ablation_id == "input_matrix_ablation.feature_matrix.input_matrix_id"
+    assert metadata_experiment.changed_key_path == "feature_matrix.input_matrix_id"
+
     reward_config = _config(tmp_path, "reward_ablation")
     reward_config["reward_ablation"]["enabled"] = True
     reward_config["reward"]["mode"] = "A0_raw_simple_return"
@@ -1027,6 +1100,17 @@ def test_generic_component_ablation_variants_have_stable_paper_ids(tmp_path):
         "without_auxiliary",
     ]
 
+    kernel_config = _config(tmp_path, "kernel_size_ablation")
+    kernel_variants = _ablation_variants(kernel_config, "kernel_size_ablation")
+    assert [item["variant_value"] for item in kernel_variants] == ["1x1", "1x3", "3x3", "5x3", "11x3", "21x3"]
+    assert [
+        (
+            item["config"]["model"]["encoder"]["kernel_size_time"],
+            item["config"]["model"]["encoder"]["kernel_size_asset"],
+        )
+        for item in kernel_variants
+    ] == [(1, 1), (1, 3), (3, 3), (5, 3), (11, 3), (21, 3)]
+
 
 def test_matrix_experiments_generate_multiple_child_variants(tmp_path, monkeypatch):
     captured = []
@@ -1045,9 +1129,11 @@ def test_matrix_experiments_generate_multiple_child_variants(tmp_path, monkeypat
     registry = ExperimentRegistry()
 
     ablation_result = registry.create_experiment(_config(tmp_path, "input_matrix_ablation")).run()
+    kernel_result = registry.create_experiment(_config(tmp_path, "kernel_size_ablation")).run()
     sensitivity_result = registry.create_experiment(_config(tmp_path, "transaction_cost_sensitivity")).run()
 
     assert ablation_result["child_run_count"] == 8
+    assert kernel_result["child_run_count"] == 6
     assert sensitivity_result["child_run_count"] == 5
     assert captured[0]["matrix_name"] == "input_matrix_ablation_results"
     assert captured[0]["variant_ids"] == [
@@ -1060,7 +1146,16 @@ def test_matrix_experiments_generate_multiple_child_variants(tmp_path, monkeypat
         "input_matrix_M6",
         "input_matrix_M7",
     ]
-    assert captured[1]["matrix_name"] == "transaction_cost_sensitivity"
+    assert captured[1]["matrix_name"] == "kernel_size_ablation_results"
+    assert captured[1]["variant_ids"] == [
+        "kernel_single_day_1x1",
+        "kernel_single_day_cross_asset_1x3",
+        "kernel_short_3x3",
+        "kernel_week_5x3",
+        "kernel_long_11x3",
+        "kernel_long_21x3",
+    ]
+    assert captured[2]["matrix_name"] == "transaction_cost_sensitivity"
 
 
 def test_asset_universe_sensitivity_generates_asset_pool_variants(tmp_path, monkeypatch):
@@ -1085,6 +1180,8 @@ def test_asset_universe_sensitivity_generates_asset_pool_variants(tmp_path, monk
     assert variants[2]["config"]["data"]["asset_universe_pools"] == ["equity"]
 
     relative_config = _config(tmp_path, "asset_universe_sensitivity")
+    relative_config["security"]["path_whitelist"] = [str(PROJECT_ROOT), str(tmp_path)]
+    relative_config["data"]["asset_universe_path"] = asset_universe_path.name
     monkeypatch.chdir(tmp_path)
     relative_variants = _sensitivity_variants(relative_config, "asset_universe_sensitivity")
     relative_ids = [item["variant_id"] for item in relative_variants]

@@ -1,0 +1,123 @@
+experiment:
+  type: hyperparameter_sweep
+data:
+  asset_universe_path: data/processed/core13_asset_universe.csv
+  panel_path: data/processed/core13_etf_lof_daily_panel.parquet
+  wide_open_path: data/processed/core13_wide_open.parquet
+  wide_high_path: data/processed/core13_wide_high.parquet
+  wide_low_path: data/processed/core13_wide_low.parquet
+  wide_close_path: data/processed/core13_wide_close.parquet
+  wide_adj_nav_path: data/processed/core13_wide_adj_nav_tushare.parquet
+  wide_pre_close_path: data/processed/core13_wide_pre_close.parquet
+  wide_pct_chg_path: data/processed/core13_wide_pct_chg.parquet
+  wide_log_return_path: data/processed/core13_wide_log_return.parquet
+  wide_amount_path: data/processed/core13_wide_amount.parquet
+  wide_vol_path: data/processed/core13_wide_vol.parquet
+  wide_turnover_rate_path: data/processed/core13_wide_turnover_rate.parquet
+  all_metrics_features_path: data/metrics_factory/core13_all_metrics_features.parquet
+  download_manifest_path: data/reports/core13_data_download_manifest.json
+  metrics_manifest_path: data/reports/core13_metrics_factory_manifest.json
+  metrics_factory:
+    enabled: true
+    all_metrics_features_path: data/metrics_factory/core13_all_metrics_features.parquet
+  start_date: '2014-01-01'
+  end_date: null
+  data_mode: availability_mask
+  strict_common_history_mode: false
+data_governance:
+  return_source: adj_nav
+  valuation_source: adj_nav
+  reward_return_source: adj_nav
+  metrics_return_source: adj_nav
+  execution_price_source: ohlcv
+  valuation_table: core13_adj_nav
+  execution_price_table: core13_ohlcv
+  valuation_execution_split: true
+  reward_valuation_split: true
+env:
+  window_size: 60
+feature_matrix:
+  input_matrix_id: M6
+  window_size: 60
+feature_reduction:
+  pca:
+    enabled: true
+    explained_variance: 0.95
+hpo:
+  enabled: true
+  equal_budget_across_models: true
+  native_only: false
+  n_trials_per_model: 1
+  metric: validation_sharpe_minus_drawdown_turnover_penalty
+  objective: validation_sharpe_minus_drawdown_turnover_penalty
+  direction: maximize
+  selection_split: validation
+  final_report_split: test
+  trainable_models:
+  - ppo_dqn_hierarchical_reimplementation
+  - hybrid_dqn_optimizer_equal_weight
+  - hybrid_dqn_optimizer_markowitz_mean_variance
+  - hybrid_dqn_optimizer_minimum_variance
+  - hybrid_dqn_optimizer_sharpe_maximization
+  - hybrid_dqn_optimizer_risk_parity
+  search_space:
+    ppo_lr:
+      type: float
+      low: 0.0001
+      high: 0.001
+      log: true
+    dqn_lr:
+      type: float
+      low: 0.0001
+      high: 0.001
+      log: true
+baselines:
+  native_rl:
+    enabled_models:
+    - ppo_dqn_hierarchical_reimplementation
+    - hybrid_dqn_optimizer_equal_weight
+    - hybrid_dqn_optimizer_markowitz_mean_variance
+    - hybrid_dqn_optimizer_minimum_variance
+    - hybrid_dqn_optimizer_sharpe_maximization
+    - hybrid_dqn_optimizer_risk_parity
+    epochs: 1
+    max_train_steps: 16
+    max_validation_steps: 16
+    max_gradient_updates_per_epoch: 4
+hybrid_dqn_optimizer:
+  lookback_window: 252
+  min_observations: 60
+  covariance_shrinkage: 0.1
+  risk_free_rate: 0.0
+  lambda_risk: 1.0
+  markowitz_optimizer_maxiter: 200
+  risk_parity_optimizer_maxiter: 300
+dqn:
+  batch_size: 8
+  warmup_steps: 4
+  target_update_interval: 8
+  use_prioritized_replay: false
+  per_enabled: false
+training:
+  epochs: 1
+  max_train_steps: 16
+  max_validation_steps: 16
+  checkpoint_include_replay_buffer: false
+statistics:
+  primary_metric: sharpe
+reproducibility:
+  seed: 42
+  seeds:
+  - 42
+output:
+  run_name: P9_related_work_hpo_pilot
+protocol:
+  protocol_id: core13_v2_full_reset_20260522
+  asset_universe_id: core13_v2
+  data_cutoff_date: '2026-05-20'
+rankability:
+  rankable_in_unified_table: false
+  diagnostic_status: diagnostic
+security:
+  path_whitelist:
+  - /Users/chenjunming/Desktop/DRL_PM

@@ -53,16 +53,21 @@ class PortfolioExecutionCore:
         date_index = _date_index(dataset)
         decision_pos = _date_position(date_index, decision_ts)
         close = _wide_table(dataset, "close")
+        valuation = _valuation_table(dataset, self.data_governance_config)
+        valuation_source = "adj_nav" if valuation is not close else "close"
+        valuation_price_at_decision = _row(valuation, decision_ts, valuation_source)
 
         if same_close_enabled:
             execution_ts = decision_ts
             valuation_ts = _date_at(date_index, decision_pos + 1)
             execution_price_type = "close"
             execution_price_array = _row(close, execution_ts, "close")
+            valuation_price_at_execution = _row(valuation, execution_ts, valuation_source)
+            valuation_price_at_next = _row(valuation, valuation_ts, valuation_source)
             return_from_decision_to_execution = np.zeros_like(execution_price_array, dtype=float)
             holding_simple_return = _safe_return(
-                _row(close, valuation_ts, "close"),
-                _row(close, decision_ts, "close"),
+                valuation_price_at_next,
+                valuation_price_at_execution,
             )
         elif execution_price == "next_open":
             execution_ts = _date_at(date_index, decision_pos + 1)
@@ -70,14 +75,25 @@ class PortfolioExecutionCore:
             execution_price_type = "open"
             open_table = _wide_table(dataset, "open")
             execution_price_array = _row(open_table, execution_ts, "open")
-            return_from_decision_to_execution = _safe_return(
-                execution_price_array,
-                _row(close, decision_ts, "close"),
-            )
-            holding_simple_return = _safe_return(
-                _row(close, valuation_ts, "close"),
-                execution_price_array,
-            )
+            if valuation_source == "adj_nav":
+                valuation_price_at_execution = _row(valuation, execution_ts, valuation_source)
+                valuation_price_at_next = valuation_price_at_execution.copy()
+                return_from_decision_to_execution = _safe_return(
+                    valuation_price_at_execution,
+                    valuation_price_at_decision,
+                )
+                holding_simple_return = np.zeros_like(execution_price_array, dtype=float)
+            else:
+                valuation_price_at_execution = execution_price_array.copy()
+                valuation_price_at_next = _row(close, valuation_ts, "close")
+                return_from_decision_to_execution = _safe_return(
+                    execution_price_array,
+                    _row(close, decision_ts, "close"),
+                )
+                holding_simple_return = _safe_return(
+                    valuation_price_at_next,
+                    execution_price_array,
+                )
         else:
             if pending_action is None:
                 execution_ts = _date_at(date_index, decision_pos + 1)
@@ -89,13 +105,15 @@ class PortfolioExecutionCore:
                 _date_position(date_index, valuation_ts)
             execution_price_type = "close"
             execution_price_array = _row(close, execution_ts, "close")
+            valuation_price_at_execution = _row(valuation, execution_ts, valuation_source)
+            valuation_price_at_next = _row(valuation, valuation_ts, valuation_source)
             return_from_decision_to_execution = _safe_return(
-                execution_price_array,
-                _row(close, decision_ts, "close"),
+                valuation_price_at_execution,
+                valuation_price_at_decision,
             )
             holding_simple_return = _safe_return(
-                _row(close, valuation_ts, "close"),
-                execution_price_array,
+                valuation_price_at_next,
+                valuation_price_at_execution,
             )
 
         cost_observation_ts = decision_ts if execution_price == "next_open" and not same_close_enabled else execution_ts
@@ -113,6 +131,10 @@ class PortfolioExecutionCore:
             "idealized_execution": bool(same_close_enabled),
             "cost_observation_date": str(cost_observation_ts.date()),
             "cost_observation_timing": cost_observation_timing,
+            "valuation_source": valuation_source,
+            "return_source": valuation_source,
+            "valuation_execution_split": bool(valuation_source == "adj_nav"),
+            "reward_valuation_split": bool(valuation_source == "adj_nav"),
         }
         return ExecutionMarketState(
             decision_date=decision_ts,
@@ -124,6 +146,9 @@ class PortfolioExecutionCore:
             availability_reason_at_execution=_availability_reason(dataset, execution_ts),
             return_from_decision_to_execution=return_from_decision_to_execution,
             holding_simple_return=holding_simple_return,
+            valuation_price_at_decision=valuation_price_at_decision,
+            valuation_price_at_execution=valuation_price_at_execution,
+            valuation_price_at_next=valuation_price_at_next,
             amount_at_execution=amount_at_cost_observation,
             volume_at_execution=volume_at_cost_observation,
             adv20_at_execution=adv20_at_cost_observation,
@@ -168,7 +193,7 @@ class PortfolioExecutionCore:
         valuation_freeze_mask = _valuation_freeze_mask(
             execution_market_state.return_from_decision_to_execution,
             decision,
-            execution_market_state.execution_price,
+            execution_market_state.valuation_price_at_execution,
             execution_market_state.availability_reason_at_execution,
             asset_ids=asset_ids,
             info=info,
@@ -176,7 +201,7 @@ class PortfolioExecutionCore:
         r_pre = _repair_pre_execution_returns(
             execution_market_state.return_from_decision_to_execution,
             decision,
-            execution_market_state.execution_price,
+            execution_market_state.valuation_price_at_execution,
             portfolio_state,
             valuation_freeze_mask,
             execution_market_state.availability_reason_at_execution,
@@ -278,8 +303,8 @@ class PortfolioExecutionCore:
         nav_next = nav_after_cost * (1.0 + post_execution_return)
         _validate_positive_nav("nav_next", nav_next)
         next_valuation_price = _next_valuation_price(
-            execution_market_state.execution_price,
-            r_hold,
+            execution_market_state.valuation_price_at_next,
+            np.zeros_like(r_hold, dtype=float),
             portfolio_state.last_valuation_price,
         )
 
@@ -596,6 +621,20 @@ def _wide_table(dataset: MarketDatasetBundle, field: str) -> pd.DataFrame:
     if field not in dataset.wide:
         raise DataContractError("ERR_DATA_MISSING_FILE", f"ERR_DATA_MISSING_FILE: wide_{field}")
     return dataset.wide[field]
+
+
+def _valuation_table(dataset: MarketDatasetBundle, data_governance_config: Mapping[str, Any]) -> pd.DataFrame:
+    source = str(
+        data_governance_config.get("valuation_source")
+        or data_governance_config.get("return_source")
+        or ""
+    ).lower()
+    split_required = bool(data_governance_config.get("valuation_execution_split", False) or source == "adj_nav")
+    if split_required:
+        if "adj_nav" not in dataset.wide:
+            raise DataContractError("ERR_DATA_MISSING_FILE", "ERR_DATA_MISSING_FILE: wide_adj_nav")
+        return dataset.wide["adj_nav"]
+    return _wide_table(dataset, "close")
 
 
 def _row(table: pd.DataFrame, date: pd.Timestamp, field: str) -> np.ndarray:

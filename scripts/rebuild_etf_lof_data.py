@@ -1,23 +1,26 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Sequence
 
 import numpy as np
 import pandas as pd
-import requests
+import yaml
 
 
-ROOT = Path("/Users/chenjunming/Desktop/DRL_PM")
+ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"
 PROCESSED_DIR = DATA_DIR / "processed"
 METRICS_DIR = DATA_DIR / "metrics_factory"
 REPORTS_DIR = DATA_DIR / "reports"
+DEFAULT_UNIVERSE_PATH = ROOT / "configs" / "data" / "etf_lof_universe.yaml"
 
 START_DATE = "2005-02-23"
 END_DATE = "2026-05-09"
@@ -37,25 +40,33 @@ class Asset:
         return f"{prefix}{self.symbol}"
 
 
-ASSETS = [
-    Asset("510050.SH", "510050", "上证50ETF", "ETF", "equity"),
-    Asset("159915.SZ", "159915", "创业板ETF", "ETF", "equity"),
-    Asset("159912.SZ", "159912", "沪深300ETF", "ETF", "equity"),
-    Asset("512500.SH", "512500", "中证500ETF华夏", "ETF", "equity"),
-    Asset("164701.SZ", "164701", "汇添富黄金及贵金属LOF", "LOF", "commodity"),
-    Asset("511010.SH", "511010", "国债ETF", "ETF", "bond"),
-    Asset("513100.SH", "513100", "纳指ETF", "ETF", "overseas_equity"),
-    Asset("513030.SH", "513030", "德国ETF", "ETF", "overseas_equity"),
-    Asset("513080.SH", "513080", "法国CAC40ETF", "ETF", "overseas_equity"),
-    Asset("513520.SH", "513520", "日经ETF", "ETF", "overseas_equity"),
-    Asset("518880.SH", "518880", "黄金ETF", "ETF", "commodity"),
-    Asset("161226.SZ", "161226", "国投白银LOF", "LOF", "commodity"),
-    Asset("501018.SH", "501018", "南方原油LOF", "LOF", "commodity"),
-    Asset("159981.SZ", "159981", "能源化工ETF", "ETF", "commodity"),
-    Asset("159985.SZ", "159985", "豆粕ETF", "ETF", "commodity"),
-    Asset("159980.SZ", "159980", "有色ETF", "ETF", "commodity"),
-    Asset("511990.SH", "511990", "华宝添益货币ETF", "ETF", "money_market"),
-]
+def load_universe(path: Path) -> tuple[list[Asset], dict[str, Any]]:
+    if not path.exists():
+        raise FileNotFoundError(f"UNIVERSE_CONFIG_NOT_FOUND: {path}")
+    payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    records = payload.get("assets")
+    if not isinstance(records, list) or not records:
+        raise ValueError("UNIVERSE_CONFIG_INVALID: assets must be a non-empty list")
+
+    assets: list[Asset] = []
+    seen: set[str] = set()
+    for index, record in enumerate(records):
+        if not isinstance(record, dict):
+            raise ValueError(f"UNIVERSE_ASSET_INVALID: assets[{index}] must be a mapping")
+        ts_code = str(record.get("ts_code", "")).strip()
+        if not ts_code:
+            raise ValueError(f"UNIVERSE_ASSET_INVALID: assets[{index}].ts_code is required")
+        if not (ts_code.endswith(".SH") or ts_code.endswith(".SZ")):
+            raise ValueError(f"UNIVERSE_ASSET_INVALID: unsupported ts_code suffix {ts_code}")
+        if ts_code in seen:
+            raise ValueError(f"UNIVERSE_ASSET_DUPLICATE: {ts_code}")
+        seen.add(ts_code)
+        symbol = str(record.get("symbol") or ts_code.split(".", maxsplit=1)[0]).strip()
+        name = str(record.get("name") or ts_code).strip()
+        asset_type = str(record.get("asset_type") or record.get("type") or "unknown").strip()
+        pool = str(record.get("pool") or "unknown").strip()
+        assets.append(Asset(ts_code=ts_code, symbol=symbol, name=name, asset_type=asset_type, pool=pool))
+    return assets, payload
 
 
 def ensure_dirs() -> None:
@@ -75,10 +86,12 @@ def date_chunks(start: str, end: str, days: int = 700) -> list[tuple[pd.Timestam
     return chunks
 
 
-def fetch_tencent(asset: Asset) -> pd.DataFrame:
+def fetch_tencent(asset: Asset, start_date: str, end_date: str) -> pd.DataFrame:
+    import requests
+
     session = requests.Session()
     rows: list[list[str]] = []
-    for start, end in date_chunks(START_DATE, END_DATE):
+    for start, end in date_chunks(start_date, end_date):
         param = (
             f"{asset.market_symbol},day,"
             f"{start.strftime('%Y-%m-%d')},{end.strftime('%Y-%m-%d')},640,qfq"
@@ -153,7 +166,7 @@ def fetch_tencent(asset: Asset) -> pd.DataFrame:
     return df[ordered]
 
 
-def write_wide(panel: pd.DataFrame) -> dict[str, pd.DataFrame]:
+def write_wide(panel: pd.DataFrame, assets: Sequence[Asset]) -> dict[str, pd.DataFrame]:
     fields = [
         "open",
         "high",
@@ -168,7 +181,7 @@ def write_wide(panel: pd.DataFrame) -> dict[str, pd.DataFrame]:
     ]
     wide = {}
     dates = pd.DatetimeIndex(sorted(panel["trade_date"].unique()))
-    asset_order = [asset.ts_code for asset in ASSETS]
+    asset_order = [asset.ts_code for asset in assets]
     for field in fields:
         table = panel.pivot(index="trade_date", columns="ts_code", values=field)
         table = table.reindex(index=dates, columns=asset_order)
@@ -179,9 +192,9 @@ def write_wide(panel: pd.DataFrame) -> dict[str, pd.DataFrame]:
     return wide
 
 
-def write_asset_universe(panel: pd.DataFrame) -> pd.DataFrame:
+def write_asset_universe(panel: pd.DataFrame, assets: Sequence[Asset]) -> pd.DataFrame:
     rows = []
-    for asset in ASSETS:
+    for asset in assets:
         sub = panel.loc[panel["ts_code"] == asset.ts_code]
         rows.append(
             {
@@ -355,7 +368,15 @@ def file_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def write_manifest(panel: pd.DataFrame, metrics: pd.DataFrame, universe: pd.DataFrame) -> None:
+def write_manifest(
+    panel: pd.DataFrame,
+    metrics: pd.DataFrame,
+    universe: pd.DataFrame,
+    *,
+    universe_path: Path,
+    start_date: str,
+    end_date: str,
+) -> None:
     files = [
         PROCESSED_DIR / "asset_universe.csv",
         PROCESSED_DIR / "etf_lof_daily_panel.parquet",
@@ -365,8 +386,9 @@ def write_manifest(panel: pd.DataFrame, metrics: pd.DataFrame, universe: pd.Data
         "generated_at": pd.Timestamp.now(tz="Asia/Shanghai").isoformat(),
         "source": "Tencent web.ifzq.gtimg.cn fqkline get",
         "adjust": "qfq",
-        "start_date_requested": START_DATE,
-        "end_date_requested": END_DATE,
+        "universe_config_path": str(universe_path.relative_to(ROOT) if universe_path.is_relative_to(ROOT) else universe_path),
+        "start_date_requested": start_date,
+        "end_date_requested": end_date,
         "asset_count": int(len(universe)),
         "ok_asset_count": int((universe["status"] == "ok").sum()),
         "panel_rows": int(len(panel)),
@@ -408,27 +430,50 @@ def write_manifest(panel: pd.DataFrame, metrics: pd.DataFrame, universe: pd.Data
     )
 
 
-def main() -> None:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Download and rebuild ETF/LOF platform data.")
+    parser.add_argument(
+        "--universe",
+        default=str(DEFAULT_UNIVERSE_PATH),
+        help="YAML file defining the ETF/LOF universe to download.",
+    )
+    parser.add_argument("--start-date", default=START_DATE)
+    parser.add_argument("--end-date", default=END_DATE)
+    parser.add_argument("--refresh", action="store_true", help="Ignore cached raw parquet files and re-download.")
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    args = parse_args(argv)
+    universe_path = Path(args.universe).expanduser().resolve()
+    assets, _ = load_universe(universe_path)
     ensure_dirs()
     frames = []
-    for asset in ASSETS:
+    for asset in assets:
         raw_path = RAW_DIR / f"{asset.ts_code}_daily.parquet"
-        if raw_path.exists():
+        if raw_path.exists() and not args.refresh:
             print(f"[load] {asset.ts_code} {asset.name}", flush=True)
             df = pd.read_parquet(raw_path)
         else:
             print(f"[download] {asset.ts_code} {asset.name}", flush=True)
-            df = fetch_tencent(asset)
+            df = fetch_tencent(asset, args.start_date, args.end_date)
             df.to_parquet(raw_path)
         print(f"  rows={len(df)} {df['trade_date'].min().date()} -> {df['trade_date'].max().date()}", flush=True)
         frames.append(df)
     panel = pd.concat(frames, ignore_index=True)
     panel = panel.sort_values(["trade_date", "ts_code"]).reset_index(drop=True)
     panel.to_parquet(PROCESSED_DIR / "etf_lof_daily_panel.parquet")
-    wide = write_wide(panel)
-    universe = write_asset_universe(panel)
+    wide = write_wide(panel, assets)
+    universe = write_asset_universe(panel, assets)
     metrics = write_metrics(wide)
-    write_manifest(panel, metrics, universe)
+    write_manifest(
+        panel,
+        metrics,
+        universe,
+        universe_path=universe_path,
+        start_date=args.start_date,
+        end_date=args.end_date,
+    )
     print("[done]")
     print(f"panel_rows={len(panel)}")
     print(f"panel_date_range={panel['trade_date'].min().date()} -> {panel['trade_date'].max().date()}")

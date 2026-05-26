@@ -15,6 +15,7 @@ class BaseStrategy(ABC):
     def __init__(self, config: Mapping[str, Any] | None = None) -> None:
         self.config = dict(config or {})
         self.is_fitted = False
+        self.decision_context: dict[str, Any] = {}
 
     def fit(self, train_data: Any | None = None, validation_data: Any | None = None) -> BaseStrategy:
         self.is_fitted = True
@@ -22,6 +23,9 @@ class BaseStrategy(ABC):
 
     def reset(self) -> None:
         return None
+
+    def set_decision_context(self, **context: Any) -> None:
+        self.decision_context = dict(context)
 
     @abstractmethod
     def compute_target_weights(

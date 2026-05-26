@@ -316,6 +316,71 @@ def test_asset_universe_status_ok_order(tmp_path):
     assert available_error.value.code == "ERR_DATA_NO_AVAILABLE_ASSET"
 
 
+def test_strict_common_history_starts_at_first_full_year_date(tmp_path):
+    asset_order = ["159915.SZ", "511010.SH"]
+    dates = pd.DatetimeIndex(["2023-12-29", "2024-01-02", "2024-01-03"])
+    asset_universe_path = tmp_path / "asset_universe.csv"
+    pd.DataFrame(
+        [
+            {
+                "ts_code": asset,
+                "symbol": asset.split(".")[0],
+                "name": asset,
+                "type": "ETF",
+                "pool": "core",
+                "status": "ok",
+                "rows": 3,
+                "first_date": "2023-12-29",
+                "last_date": "2024-01-03",
+                "median_amount_last_252": 1000.0,
+                "raw_path": f"data/raw/{asset}_daily.parquet",
+            }
+            for asset in asset_order
+        ]
+    ).to_csv(asset_universe_path, index=False)
+
+    config = deepcopy(DEFAULT_CONFIG)
+    config["security"]["path_whitelist"] = [str(PROJECT_ROOT), str(tmp_path)]
+    config["data"]["asset_universe_path"] = str(asset_universe_path)
+    config["data"]["start_date"] = "2024-01-01"
+    config["data"]["strict_common_history_mode"] = True
+
+    config["data"]["panel_path"] = str(tmp_path / "panel.parquet")
+    pd.DataFrame(
+        [{"trade_date": date, "ts_code": asset} for date in dates for asset in asset_order]
+    ).to_parquet(config["data"]["panel_path"])
+
+    base = pd.DataFrame(
+        {
+            "159915.SZ": [1.0, 1.1, 1.2],
+            "511010.SH": [1.0, np.nan, 1.1],
+        },
+        index=dates,
+    )
+    for key in list(config["data"]):
+        if key.startswith("wide_") and key.endswith("_path"):
+            config["data"][key] = str(tmp_path / f"{key}.parquet")
+            base.to_parquet(config["data"][key])
+
+    config["data"]["all_metrics_features_path"] = str(tmp_path / "all_metrics_features.parquet")
+    pd.DataFrame(
+        [{"date": date, "ts_code": asset, "metric": 1.0} for date in dates for asset in asset_order]
+    ).to_parquet(config["data"]["all_metrics_features_path"])
+    config["data"]["download_manifest_path"] = str(tmp_path / "download_manifest.json")
+    config["data"]["metrics_manifest_path"] = str(tmp_path / "metrics_manifest.json")
+    (tmp_path / "download_manifest.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "metrics_manifest.json").write_text("{}", encoding="utf-8")
+
+    bundle = load_market_dataset(config)
+
+    assert bundle.wide["close"].index.strftime("%Y-%m-%d").tolist() == ["2024-01-03"]
+    assert bundle.availability_mask.all(axis=1).all()
+    assert bundle.data_manifest["configured_start_date"] == "2024-01-01"
+    assert bundle.data_manifest["date_start"] == "2024-01-03"
+    assert bundle.panel["trade_date"].dt.strftime("%Y-%m-%d").unique().tolist() == ["2024-01-03"]
+    assert bundle.metrics_features["date"].dt.strftime("%Y-%m-%d").unique().tolist() == ["2024-01-03"]
+
+
 def test_wide_tables_align_to_asset_order(tmp_path):
     asset_order = ["159915.SZ", "511010.SH"]
     asset_universe_path = tmp_path / "asset_universe.csv"
@@ -464,9 +529,9 @@ def test_panel_and_metrics_feature_key_integrity(tmp_path):
 
     bundle = load_market_dataset(config)
 
-    assert bundle.panel["trade_date"].tolist() == [pd.Timestamp("2024-01-02"), pd.Timestamp("2024-01-03")]
+    assert bundle.panel["trade_date"].tolist() == [pd.Timestamp("2024-01-02")]
     assert bundle.metrics_features is not None
-    assert bundle.metrics_features["date"].tolist() == [pd.Timestamp("2024-01-02"), pd.Timestamp("2024-01-03")]
+    assert bundle.metrics_features["date"].tolist() == [pd.Timestamp("2024-01-02")]
     assert bundle.data_manifest["metrics_factory_enabled"] is True
 
     duplicate_panel = pd.concat([panel, panel.iloc[[0]]], ignore_index=True)
@@ -522,6 +587,7 @@ def test_availability_reason_is_exclusive(tmp_path):
     config = deepcopy(DEFAULT_CONFIG)
     config["security"]["path_whitelist"] = [str(PROJECT_ROOT), str(tmp_path)]
     config["data"]["asset_universe_path"] = str(asset_universe_path)
+    config["data"]["strict_common_history_mode"] = False
     _write_required_market_dataset_files(config, tmp_path, asset_order)
 
     dates = pd.DatetimeIndex(

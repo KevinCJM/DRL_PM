@@ -255,6 +255,7 @@ __marimo__/
 
 # Local OS/editor noise
 .DS_Store
+._*
 
 # Agent process logs
 *_流水记录.jsonl

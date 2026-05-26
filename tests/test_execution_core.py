@@ -181,6 +181,73 @@ def test_next_open_execution_returns():
     np.testing.assert_allclose(state.amount_at_cost_observation, np.array([1000.0, 2000.0]))
 
 
+def test_adj_nav_valuation_split_keeps_next_open_execution_price():
+    config = _execution_config()
+    config["data_governance"].update(
+        {
+            "return_source": "adj_nav",
+            "valuation_source": "adj_nav",
+            "reward_return_source": "adj_nav",
+            "metrics_return_source": "adj_nav",
+            "execution_price_source": "ohlcv",
+            "valuation_execution_split": True,
+            "reward_valuation_split": True,
+        }
+    )
+    dataset = _market_dataset_bundle()
+    dataset.wide["adj_nav"] = pd.DataFrame(
+        [[100.0, 50.0], [110.0, 40.0], [121.0, 44.0]],
+        index=dataset.wide["close"].index,
+        columns=dataset.wide["close"].columns,
+    )
+    core = PortfolioExecutionCore(config)
+    state = core.build_execution_market_state(dataset, pd.Timestamp("2024-01-02"))
+
+    assert state.execution_price_type == "open"
+    np.testing.assert_allclose(state.execution_price, np.array([11.0, 18.0]))
+    np.testing.assert_allclose(state.valuation_price_at_decision, np.array([100.0, 50.0]))
+    np.testing.assert_allclose(state.valuation_price_at_execution, np.array([110.0, 40.0]))
+    np.testing.assert_allclose(state.return_from_decision_to_execution, np.array([0.10, -0.20]))
+    np.testing.assert_allclose(state.holding_simple_return, np.zeros(2))
+    assert core.execution_manifest_flags["valuation_source"] == "adj_nav"
+    assert core.execution_manifest_flags["return_source"] == "adj_nav"
+    assert core.execution_manifest_flags["valuation_execution_split"] is True
+    assert core.execution_manifest_flags["reward_valuation_split"] is True
+
+    portfolio_state = PortfolioState(
+        date=state.decision_date,
+        nav=1.0,
+        portfolio_value=100000000.0,
+        current_weights=np.array([0.5, 0.5]),
+    )
+    result = core.execute_step(
+        np.array([0.5, 0.5]),
+        np.array([0.5, 0.5]),
+        state,
+        portfolio_state,
+        rebalance_action=0,
+    )
+
+    assert result.pre_execution_return == pytest.approx(-0.05)
+    assert result.post_execution_return == pytest.approx(0.0)
+    assert result.net_return == pytest.approx(-0.05)
+    np.testing.assert_allclose(portfolio_state.last_valuation_price, np.array([110.0, 40.0]))
+
+
+def test_adj_nav_valuation_split_requires_adj_nav_table():
+    config = _execution_config()
+    config["data_governance"]["valuation_execution_split"] = True
+    config["data_governance"]["valuation_source"] = "adj_nav"
+
+    with pytest.raises(DataContractError) as error:
+        PortfolioExecutionCore(config).build_execution_market_state(
+            _market_dataset_bundle(),
+            pd.Timestamp("2024-01-02"),
+        )
+
+    assert error.value.code == "ERR_DATA_MISSING_FILE"
+
+
 def test_next_open_calibrated_cost_path_uses_observable_amount():
     state = PortfolioExecutionCore(_config("next_open")).build_execution_market_state(
         _market_dataset_bundle(),

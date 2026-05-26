@@ -1,0 +1,68 @@
+experiment:
+  type: baseline_comparison
+data_governance:
+  return_source: adj_nav
+  valuation_source: adj_nav
+  reward_return_source: adj_nav
+  metrics_return_source: adj_nav
+  execution_price_source: ohlcv
+  valuation_table: core13_adj_nav
+  execution_price_table: core13_ohlcv
+  valuation_execution_split: true
+  reward_valuation_split: true
+feature_matrix:
+  input_matrix_id: M6
+  window_size: 60
+feature_reduction:
+  pca:
+    enabled: true
+    explained_variance: 0.95
+baselines:
+  traditional:
+  - risk_parity
+  - buy_and_hold
+  - equal_weight
+  deep: []
+  native_rl:
+    enabled_models:
+    - risk_aware_graph_transformer_constrained_actor_critic
+    - cage_eiie_joint_light
+    - eiie_native
+    - pgportfolio_eiie_native
+    - cnn_ppo_native
+    epochs: 2
+    max_train_steps: 128
+    max_validation_steps: 128
+    max_gradient_updates_per_epoch: 16
+ra_gt_rcpo:
+  enabled: true
+cage_eiie:
+  enabled: true
+hpo:
+  enabled: false
+new_model_protocol:
+  phase: P16.4_formal_comparison
+  model_extension_id: core13_v2_p16_ra_gt_rcpo_20260525
+  selection_split: validation
+  test_used_for_model_selection: false
+training:
+  epochs: 2
+  max_train_steps: 128
+  max_validation_steps: 128
+  checkpoint_include_replay_buffer: false
+reproducibility:
+  seed: 42
+  seeds:
+  - 42
+output:
+  run_name: P16_ra_gt_rcpo_formal_comparison
+protocol:
+  protocol_id: core13_v2_full_reset_20260522
+  asset_universe_id: core13_v2
+  data_cutoff_date: '2026-05-20'
+rankability:
+  rankable_in_unified_table: true
+  diagnostic_status: formal
+security:
+  path_whitelist:
+  - /Users/chenjunming/Desktop/DRL_PM

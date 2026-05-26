@@ -15,6 +15,7 @@ from src.agents.dqn_agent import DQNAgent
 from src.agents.hybrid_agent import HybridAgent
 from src.agents.ppo_agent import PPOAgent
 from src.baselines.base_strategy import BaseStrategy
+from src.baselines.cage_common import MODEL_EXTENSION_ID, mapping
 from src.baselines.equal_weight import EqualWeightStrategy
 from src.envs.state import DecisionMarketState, PortfolioAction, PortfolioState
 from src.models.cost_estimator import CostEstimator
@@ -22,6 +23,11 @@ from src.models.distributional_cvar_gated_ppo import DistributionalCVaRGatedPPO
 from src.models.dqn_gated_multitask_cnn_ppo import FullGatedModel
 from src.models.partial_rebalance_gated_ppo import PartialRebalanceGatedPPO
 from src.models.preference_conditioned_gated_ppo import PreferenceConditionedGatedPPO
+from src.models.risk_aware_graph_transformer import (
+    RA_GT_RCPO_ALGORITHM,
+    RA_GT_RCPO_MODEL_EXTENSION_ID,
+    RA_GT_RCPO_MODEL_NAMES,
+)
 from src.models.uncertainty_aware_gated_ppo import UncertaintyAwareGatedPPO
 from src.utils.checkpoint import load_checkpoint, save_checkpoint
 from src.experiments.aggregate_results import aggregate_walk_forward
@@ -281,8 +287,10 @@ def run_strategy_backtest(
     segment: str = "test",
     run_dir: str | None = None,
     split_override: SplitSpec | None = None,
+    artifacts: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    artifacts = build_pipeline_artifacts(config, split_override=split_override)
+    if artifacts is None:
+        artifacts = build_pipeline_artifacts(config, split_override=split_override)
     backtest_output = _run_backtest_with_artifacts(
         config,
         artifacts,
@@ -314,6 +322,7 @@ def run_strategy_backtest(
     payload["last_checkpoint_path"] = summary_row.get("checkpoint_last_path")
     payload["evaluated_checkpoint_path"] = summary_row.get("evaluated_checkpoint_path")
     payload["best_validation_metric"] = summary_row.get("best_validation_metric")
+    payload.update(_new_model_artifacts(payload, config=strategy_config))
     return payload
 
 
@@ -487,11 +496,13 @@ def run_strategy_comparison(
         raise RuntimeError("ERR_EXPERIMENT_NO_COMPLETED_STRATEGY")
 
     paired = _paired_return_payload(returns_by_model, config, training_summary_rows=training_summary_rows)
-    return {
+    daily_returns = _concat(frames["daily_returns"])
+    daily_weights = _concat(frames["daily_weights"])
+    payload = {
         "status": "completed",
         "metrics": metrics,
-        "daily_returns": _concat(frames["daily_returns"]),
-        "daily_weights": _concat(frames["daily_weights"]),
+        "daily_returns": daily_returns,
+        "daily_weights": daily_weights,
         "daily_turnover": _concat(frames["daily_turnover"]),
         "daily_rebalance": _concat(frames["daily_rebalance"]),
         "daily_costs": _concat(frames["daily_costs"]),
@@ -502,6 +513,9 @@ def run_strategy_comparison(
         **paired,
         **artifact_payload(artifacts),
     }
+    payload["availability_mask_contract"] = _availability_mask_contract_from_frames(daily_returns, daily_weights, artifacts["dataset"])
+    payload.update(_new_model_artifacts(payload, config=config))
+    return payload
 
 
 def _run_backtest_with_artifacts(
@@ -1064,7 +1078,7 @@ def result_mapping(
     model_name: str,
 ) -> dict[str, Any]:
     metrics = dict(result.metrics)
-    return {
+    payload = {
         "status": status,
         "model_name": model_name,
         "metrics": metrics,
@@ -1075,10 +1089,13 @@ def result_mapping(
         "daily_costs": _with_model_name(result.daily_costs, model_name),
         "baseline_daily_diagnostics": _baseline_daily_diagnostics(result),
         "run_manifest": result.run_manifest,
+        **_availability_mask_contract_payload(result, artifacts),
         "training_status": "not_applicable_for_backtest_pipeline",
         "device": config.get("device"),
         **artifact_payload(artifacts),
     }
+    payload.update(_new_model_artifacts(payload, config=config))
+    return payload
 
 
 def _with_model_name(frame: pd.DataFrame, model_name: str) -> pd.DataFrame:
@@ -1086,6 +1103,81 @@ def _with_model_name(frame: pd.DataFrame, model_name: str) -> pd.DataFrame:
     if "model_name" in result.columns:
         result["model_name"] = str(model_name)
     return result
+
+
+def _availability_mask_contract_payload(
+    result: BacktestResult,
+    artifacts: Mapping[str, Any],
+) -> dict[str, Any]:
+    dataset = artifacts.get("dataset")
+    if dataset is None:
+        return {}
+    return {"availability_mask_contract": _availability_mask_contract(result, dataset)}
+
+
+def _availability_mask_contract(result: BacktestResult, dataset: MarketDatasetBundle) -> dict[str, Any]:
+    return _availability_mask_contract_from_frames(result.daily_returns, result.daily_weights, dataset)
+
+
+def _availability_mask_contract_from_frames(
+    daily_returns: pd.DataFrame,
+    daily_weights: pd.DataFrame,
+    dataset: MarketDatasetBundle,
+) -> dict[str, Any]:
+    availability = dataset.availability_mask.astype(bool)
+    min_available = int(availability.sum(axis=1).min()) if not availability.empty else 0
+    reason_counts: dict[str, int] = {}
+    if dataset.availability_reason is not None and not dataset.availability_reason.empty:
+        reasons = pd.Series(dataset.availability_reason.to_numpy(dtype=object).ravel())
+        reason_counts = {
+            str(key): int(value)
+            for key, value in reasons.value_counts(dropna=False).sort_index().items()
+        }
+
+    daily_returns_finite = _finite_columns(daily_returns, ("net_return", "portfolio_log_return"))
+    daily_nav_finite = _finite_columns(daily_returns, ("nav",))
+    unavailable_weight_abs_max = _unavailable_weight_abs_max(daily_weights, availability)
+    frozen_or_imputed_valuation_count = 0
+    passed = (
+        min_available >= 2
+        and unavailable_weight_abs_max <= 1.0e-12
+        and daily_returns_finite
+        and daily_nav_finite
+        and frozen_or_imputed_valuation_count == 0
+    )
+    return {
+        "availability_mask_contract_passed": bool(passed),
+        "min_available_assets_per_date": min_available,
+        "unavailable_asset_weight_abs_max": float(unavailable_weight_abs_max),
+        "daily_returns_finite": bool(daily_returns_finite),
+        "daily_nav_finite": bool(daily_nav_finite),
+        "frozen_or_imputed_valuation_count": frozen_or_imputed_valuation_count,
+        "availability_reason_counts": reason_counts,
+    }
+
+
+def _finite_columns(frame: pd.DataFrame, columns: Sequence[str]) -> bool:
+    for column in columns:
+        if column not in frame.columns:
+            return False
+        values = pd.to_numeric(frame[column], errors="coerce")
+        if values.empty or not bool(np.isfinite(values.to_numpy(dtype=float)).all()):
+            return False
+    return True
+
+
+def _unavailable_weight_abs_max(daily_weights: pd.DataFrame, availability: pd.DataFrame) -> float:
+    if daily_weights.empty or availability.empty:
+        return float("inf")
+    max_weight = 0.0
+    for row in daily_weights.itertuples(index=False):
+        date = pd.Timestamp(getattr(row, "date"))
+        asset_id = str(getattr(row, "asset_id"))
+        if date not in availability.index or asset_id not in availability.columns:
+            continue
+        if not bool(availability.loc[date, asset_id]):
+            max_weight = max(max_weight, abs(float(getattr(row, "weight"))))
+    return float(max_weight)
 
 
 def artifact_payload(artifacts: Mapping[str, Any]) -> dict[str, Any]:
@@ -1119,6 +1211,423 @@ def artifact_payload(artifacts: Mapping[str, Any]) -> dict[str, Any]:
             "status": "completed" if getattr(reduction, "is_fitted", False) else "not_fitted",
         },
     }
+
+
+def _new_model_artifacts(payload: Mapping[str, Any], *, config: Mapping[str, Any]) -> dict[str, Any]:
+    model_extension_id = _configured_model_extension_id(config)
+    diagnostics = _new_model_diagnostics(payload.get("baseline_daily_diagnostics"), model_extension_id=model_extension_id)
+    if diagnostics.empty:
+        return {}
+    asset_ids = [str(item) for item in payload.get("canonical_asset_order", [])]
+    gate_actions = _gate_actions_frame(diagnostics)
+    result = {
+        "gate_actions": gate_actions,
+        "gate_action_summary": _gate_action_summary(gate_actions, model_extension_id=model_extension_id),
+        "cage_eiie_candidate_weights": _weights_sidecar(diagnostics, "candidate_weights_json", asset_ids, "candidate_weight"),
+        "cage_final_weights": _weights_sidecar(diagnostics, "executed_weights_json", asset_ids, "executed_weight"),
+        "turnover_cost_breakdown": _turnover_cost_breakdown(diagnostics),
+        "risk_metrics": _risk_metrics(payload.get("daily_returns"), diagnostics, model_extension_id=model_extension_id),
+        "validation_selection_report": _validation_selection_report(payload, config, diagnostics, model_extension_id=model_extension_id),
+        "new_model_sidecar_manifest": _new_model_sidecar_manifest(config, gate_actions, model_extension_id=model_extension_id),
+    }
+    result.update(_ra_gt_rcpo_artifacts(payload, diagnostics))
+    return {key: value for key, value in result.items() if not (_is_empty_frame(value))}
+
+
+def _configured_model_extension_id(config: Mapping[str, Any]) -> str:
+    new_model = mapping(config.get("new_model_protocol"))
+    return str(new_model.get("model_extension_id") or MODEL_EXTENSION_ID)
+
+
+def _new_model_diagnostics(value: Any, *, model_extension_id: str) -> pd.DataFrame:
+    if not isinstance(value, pd.DataFrame) or value.empty:
+        return pd.DataFrame()
+    frame = value.copy()
+    if "model_extension_id" in frame.columns:
+        mask = frame["model_extension_id"].fillna("").astype(str).eq(str(model_extension_id))
+    elif "paper_model_id" in frame.columns:
+        mask = frame["paper_model_id"].fillna("").astype(str).isin(PAPER_NEW_MODEL_NAMES)
+    else:
+        mask = pd.Series(False, index=frame.index)
+    if str(model_extension_id) == MODEL_EXTENSION_ID and "rho" in frame.columns and "paper_model_id" in frame.columns:
+        mask = mask | frame["paper_model_id"].fillna("").astype(str).isin(PAPER_NEW_MODEL_NAMES)
+    return frame.loc[mask].copy()
+
+
+def _ra_gt_rcpo_artifacts(payload: Mapping[str, Any], diagnostics: pd.DataFrame) -> dict[str, Any]:
+    if diagnostics.empty or "paper_model_id" not in diagnostics.columns:
+        return {}
+    mask = diagnostics["paper_model_id"].fillna("").astype(str).isin(P16_RA_GT_RCPO_MODEL_NAMES)
+    frame = diagnostics.loc[mask].copy()
+    if frame.empty:
+        return {}
+    return {
+        "ra_gt_rcpo_daily_diagnostics": _ra_gt_rcpo_daily_diagnostics(frame),
+        "ra_gt_rcpo_constraint_multipliers": _ra_gt_rcpo_constraint_multipliers(frame),
+        "ra_gt_rcpo_graph_diagnostics": _ra_gt_rcpo_graph_diagnostics(frame),
+        "ra_gt_rcpo_actor_critic_training_history": _ra_gt_rcpo_training_history(payload, frame),
+        "ra_gt_rcpo_risk_decomposition": _ra_gt_rcpo_risk_decomposition(frame),
+    }
+
+
+def _ra_gt_rcpo_daily_diagnostics(diagnostics: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "date",
+        "model_name",
+        "seed",
+        "fold_id",
+        "rho",
+        "rebalance_intensity",
+        "scheduler_allowed_rebalance",
+        "estimated_turnover",
+        "realized_turnover",
+        "estimated_cost",
+        "realized_cost",
+        "CVaR_loss_5",
+        "max_drawdown_loss",
+        "lambda_turnover",
+        "lambda_cost",
+        "lambda_cvar",
+        "lambda_drawdown",
+        "graph_feature_mode",
+        "constraint_violation_count",
+        "model_extension_id",
+    ]
+    frame = diagnostics.copy()
+    for column in columns:
+        if column not in frame.columns:
+            frame[column] = pd.NA
+    return frame.loc[:, columns]
+
+
+def _ra_gt_rcpo_constraint_multipliers(diagnostics: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "date",
+        "model_name",
+        "seed",
+        "fold_id",
+        "lambda_turnover",
+        "lambda_cost",
+        "lambda_cvar",
+        "lambda_drawdown",
+        "average_turnover_per_step_budget",
+        "average_cost_per_step_budget",
+        "cvar_loss_budget",
+        "drawdown_budget",
+        "constraint_violation_count",
+        "model_extension_id",
+    ]
+    frame = diagnostics.copy()
+    for column in columns:
+        if column not in frame.columns:
+            frame[column] = pd.NA
+    return frame.loc[:, columns]
+
+
+def _ra_gt_rcpo_graph_diagnostics(diagnostics: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "date",
+        "model_name",
+        "seed",
+        "fold_id",
+        "graph_feature_mode",
+        "graph_edge_threshold",
+        "graph_density",
+        "mean_abs_correlation",
+        "model_extension_id",
+    ]
+    frame = diagnostics.copy()
+    for column in columns:
+        if column not in frame.columns:
+            frame[column] = pd.NA
+    return frame.loc[:, columns]
+
+
+def _ra_gt_rcpo_training_history(payload: Mapping[str, Any], diagnostics: pd.DataFrame) -> pd.DataFrame:
+    history = _frame_or_none(payload.get("baseline_training_history"))
+    if history is None or history.empty:
+        return pd.DataFrame()
+    model_ids = set(diagnostics["model_name"].dropna().astype(str)) if "model_name" in diagnostics.columns else set()
+    result = history.copy()
+    if model_ids and "model_name" in result.columns:
+        result = result.loc[result["model_name"].astype(str).isin(model_ids)].copy()
+    return result
+
+
+def _ra_gt_rcpo_risk_decomposition(diagnostics: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "date",
+        "model_name",
+        "seed",
+        "fold_id",
+        "value_return",
+        "value_cost",
+        "value_drawdown",
+        "value_cvar_loss",
+        "CVaR_loss_5",
+        "max_drawdown_loss",
+        "net_return",
+        "portfolio_log_return",
+        "nav",
+        "model_extension_id",
+    ]
+    frame = diagnostics.copy()
+    for column in columns:
+        if column not in frame.columns:
+            frame[column] = pd.NA
+    return frame.loc[:, columns]
+
+
+def _gate_actions_frame(diagnostics: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "date",
+        "decision_date",
+        "execution_date",
+        "model_name",
+        "paper_model_id",
+        "seed",
+        "fold_id",
+        "gate_action",
+        "gate_action_index",
+        "rho",
+        "rebalance_intensity",
+        "rebalance_values",
+        "scheduler_allowed_rebalance",
+        "forced_hold_reason",
+        "estimated_turnover",
+        "realized_turnover",
+        "estimated_cost",
+        "realized_cost",
+        "CVaR_loss_5",
+        "drawdown",
+        "model_extension_id",
+    ]
+    frame = diagnostics.copy()
+    for column in columns:
+        if column not in frame.columns:
+            frame[column] = pd.NA
+    return frame.loc[:, columns]
+
+
+def _weights_sidecar(diagnostics: pd.DataFrame, json_column: str, asset_ids: Sequence[str], value_column: str) -> pd.DataFrame:
+    if json_column not in diagnostics.columns:
+        return pd.DataFrame()
+    rows: list[dict[str, Any]] = []
+    for record in diagnostics.to_dict("records"):
+        weights = _parse_weights_json(record.get(json_column))
+        if not weights:
+            continue
+        names = list(asset_ids)
+        if len(names) != len(weights):
+            names = [f"asset_{index}" for index in range(len(weights))]
+        for asset_id, weight in zip(names, weights, strict=False):
+            rows.append(
+                {
+                    "date": record.get("date"),
+                    "decision_date": record.get("decision_date"),
+                    "execution_date": record.get("execution_date"),
+                    "model_name": record.get("model_name"),
+                    "paper_model_id": record.get("paper_model_id"),
+                    "seed": record.get("seed"),
+                    "fold_id": record.get("fold_id"),
+                    "asset_id": asset_id,
+                    value_column: float(weight),
+                    "rho": record.get("rho"),
+                    "model_extension_id": record.get("model_extension_id"),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _parse_weights_json(value: Any) -> list[float]:
+    if value is None or pd.isna(value):
+        return []
+    try:
+        payload = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, Sequence) or isinstance(payload, (str, bytes)):
+        return []
+    result: list[float] = []
+    for item in payload:
+        try:
+            result.append(float(item))
+        except (TypeError, ValueError):
+            return []
+    return result
+
+
+def _turnover_cost_breakdown(diagnostics: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "date",
+        "decision_date",
+        "execution_date",
+        "model_name",
+        "paper_model_id",
+        "seed",
+        "fold_id",
+        "rho",
+        "candidate_turnover",
+        "estimated_turnover",
+        "realized_turnover",
+        "turnover",
+        "estimated_cost",
+        "realized_cost",
+        "total_transaction_cost",
+        "model_extension_id",
+    ]
+    frame = diagnostics.copy()
+    for column in columns:
+        if column not in frame.columns:
+            frame[column] = pd.NA
+    return frame.loc[:, columns]
+
+
+def _risk_metrics(daily_returns_value: Any, diagnostics: pd.DataFrame, *, model_extension_id: str) -> pd.DataFrame:
+    if not isinstance(daily_returns_value, pd.DataFrame) or daily_returns_value.empty:
+        return pd.DataFrame()
+    daily_returns = daily_returns_value.copy()
+    if "model_name" not in daily_returns.columns or "net_return" not in daily_returns.columns:
+        return pd.DataFrame()
+    model_names = set(diagnostics["model_name"].dropna().astype(str)) if "model_name" in diagnostics.columns else set()
+    if model_names:
+        daily_returns = daily_returns.loc[daily_returns["model_name"].astype(str).isin(model_names)].copy()
+    rows: list[dict[str, Any]] = []
+    group_cols = [column for column in ("model_name", "seed", "fold_id") if column in daily_returns.columns]
+    for keys, group in daily_returns.groupby(group_cols, dropna=False, sort=False):
+        key_values = keys if isinstance(keys, tuple) else (keys,)
+        key_map = dict(zip(group_cols, key_values, strict=False))
+        returns = pd.to_numeric(group["net_return"], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+        nav = np.cumprod(1.0 + returns)
+        running_max = np.maximum.accumulate(nav) if nav.size else np.array([], dtype=float)
+        drawdown = np.divide(running_max - nav, running_max, out=np.zeros_like(nav), where=running_max > 0.0)
+        tail_n = max(1, int(np.ceil(0.05 * returns.size))) if returns.size else 1
+        cvar_loss_5 = float(max(0.0, -np.mean(np.sort(returns)[:tail_n]))) if returns.size else np.nan
+        rows.append(
+            {
+                **key_map,
+                "paper_model_id": _paper_id_for_model(diagnostics, str(key_map.get("model_name", ""))),
+                "n_steps": int(returns.size),
+                "cumulative_return": float(nav[-1] - 1.0) if nav.size else np.nan,
+                "max_drawdown_loss": float(np.max(drawdown)) if drawdown.size else np.nan,
+                "CVaR_loss_5": cvar_loss_5,
+                "mean_net_return": float(np.mean(returns)) if returns.size else np.nan,
+                "volatility": float(np.std(returns, ddof=0)) if returns.size else np.nan,
+                "model_extension_id": model_extension_id,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _paper_id_for_model(diagnostics: pd.DataFrame, model_name: str) -> Any:
+    if "model_name" not in diagnostics.columns or "paper_model_id" not in diagnostics.columns:
+        return model_name
+    selected = diagnostics.loc[diagnostics["model_name"].astype(str).eq(model_name), "paper_model_id"].dropna()
+    return model_name if selected.empty else selected.iloc[0]
+
+
+def _gate_action_summary(gate_actions: pd.DataFrame, *, model_extension_id: str) -> pd.DataFrame:
+    if gate_actions.empty or "model_name" not in gate_actions.columns:
+        return pd.DataFrame()
+    rows: list[dict[str, Any]] = []
+    group_cols = [column for column in ("model_name", "paper_model_id", "seed", "fold_id") if column in gate_actions.columns]
+    for keys, group in gate_actions.groupby(group_cols, dropna=False, sort=False):
+        key_values = keys if isinstance(keys, tuple) else (keys,)
+        rho = pd.to_numeric(group.get("rho"), errors="coerce")
+        gate_action = pd.to_numeric(group.get("gate_action"), errors="coerce")
+        forced = group.get("forced_hold_reason", pd.Series([pd.NA] * len(group))).fillna("").astype(str)
+        rows.append(
+            {
+                **dict(zip(group_cols, key_values, strict=False)),
+                "n_decisions": int(len(group)),
+                "mean_rho": float(rho.mean()) if not rho.dropna().empty else np.nan,
+                "rebalance_decision_rate": float((gate_action > 0).mean()) if not gate_action.dropna().empty else np.nan,
+                "scheduler_forced_hold_count": int(forced.eq("scheduler_blocked").sum()),
+                "model_chosen_hold_count": int(forced.eq("model_chosen_hold").sum()),
+                "model_extension_id": model_extension_id,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _validation_selection_report(
+    payload: Mapping[str, Any],
+    config: Mapping[str, Any],
+    diagnostics: pd.DataFrame,
+    *,
+    model_extension_id: str,
+) -> pd.DataFrame:
+    hpo_cfg = mapping(config.get("hpo"))
+    summary = payload.get("baseline_training_summary")
+    allowed_ids = set()
+    for column in ("model_name", "paper_model_id"):
+        if column in diagnostics.columns:
+            allowed_ids.update(diagnostics[column].dropna().astype(str).tolist())
+    rows: list[dict[str, Any]] = []
+    if isinstance(summary, pd.DataFrame) and not summary.empty:
+        source = summary
+    else:
+        source = diagnostics.drop_duplicates(["model_name"]) if "model_name" in diagnostics.columns else pd.DataFrame()
+    for record in source.to_dict("records"):
+        model_name = str(record.get("model_name") or record.get("paper_model_id") or "")
+        if not model_name:
+            continue
+        paper_model_id = str(record.get("paper_model_id", model_name))
+        if allowed_ids and model_name not in allowed_ids and paper_model_id not in allowed_ids:
+            continue
+        rows.append(
+            {
+                "model_name": model_name,
+                "paper_model_id": record.get("paper_model_id", model_name),
+                "selection_split": hpo_cfg.get("selection_split", "validation"),
+                "final_report_split": hpo_cfg.get("final_report_split", "test"),
+                "test_used_for_model_selection": False,
+                "validation_only_promotion_gate": True,
+                "best_validation_metric": record.get("best_validation_metric", payload.get("best_validation_metric")),
+                "best_trial_number": payload.get("best_trial_number"),
+                "best_value": payload.get("best_value"),
+                "model_extension_id": model_extension_id,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _new_model_sidecar_manifest(config: Mapping[str, Any], gate_actions: pd.DataFrame, *, model_extension_id: str) -> dict[str, Any]:
+    protocol = mapping(config.get("protocol"))
+    new_model = mapping(config.get("new_model_protocol"))
+    artifact_names = [
+        "gate_actions",
+        "gate_action_summary",
+        "cage_eiie_candidate_weights",
+        "cage_final_weights",
+        "turnover_cost_breakdown",
+        "risk_metrics",
+        "validation_selection_report",
+    ]
+    if model_extension_id == RA_GT_RCPO_MODEL_EXTENSION_ID:
+        artifact_names.extend(
+            [
+                "ra_gt_rcpo_daily_diagnostics",
+                "ra_gt_rcpo_constraint_multipliers",
+                "ra_gt_rcpo_graph_diagnostics",
+                "ra_gt_rcpo_actor_critic_training_history",
+                "ra_gt_rcpo_risk_decomposition",
+            ]
+        )
+    return {
+        "base_protocol_id": new_model.get("base_protocol_id", protocol.get("protocol_id")),
+        "protocol_id": protocol.get("protocol_id"),
+        "model_extension_id": model_extension_id,
+        "post_hoc_development_disclosure": True,
+        "test_used_for_model_selection": False,
+        "selection_split": mapping(config.get("hpo")).get("selection_split", new_model.get("selection_split", "validation")),
+        "artifact_names": artifact_names,
+        "gate_action_rows": int(len(gate_actions)),
+    }
+
+
+def _is_empty_frame(value: Any) -> bool:
+    return isinstance(value, pd.DataFrame) and value.empty and len(value.columns) == 0
 
 
 def objective_metric(result: Mapping[str, Any], metric: str) -> float:
@@ -1398,6 +1907,24 @@ HYBRID_DQN_OPTIMIZER_BY_MODEL = {
     "hybrid_dqn_optimizer_risk_parity": "risk_parity",
 }
 NATIVE_REIMPLEMENTATION_BASELINES = frozenset(RELATED_WORK_REIMPLEMENTATION_MODEL_NAMES)
+P12_CAGE_EIIE_MODEL_NAMES = {
+    "cage_eiie_frozen_gate",
+    "cage_eiie_multilevel_gate",
+    "cage_eiie_distributional",
+    "cage_eiie_no_cvar",
+    "cage_eiie_distributional_no_cvar",
+    "cage_eiie_joint_light",
+    "cage_eiie_fixed_rho_25",
+    "cage_eiie_fixed_rho_50",
+    "cage_eiie_fixed_rho_75",
+}
+P13_GT_RCPO_MODEL_NAMES = {
+    "graph_transformer_risk_constrained_actor_critic_lite",
+    "gt_rcpo_lite",
+}
+P16_RA_GT_RCPO_MODEL_NAMES = set(RA_GT_RCPO_MODEL_NAMES)
+P12_P13_NEW_MODEL_NAMES = P12_CAGE_EIIE_MODEL_NAMES | P13_GT_RCPO_MODEL_NAMES
+PAPER_NEW_MODEL_NAMES = P12_P13_NEW_MODEL_NAMES | P16_RA_GT_RCPO_MODEL_NAMES
 TRADITIONAL_BASELINE_NAMES = {
     "fixed_ratio",
     "equal_weight",
@@ -1484,6 +2011,9 @@ def _training_summary_by_model(training_summary_rows: Any | None) -> dict[str, d
         "optimizer_allocation_method",
         "optimizer_fallback_rate",
         "rankable_in_unified_table",
+        "model_extension_id",
+        "post_hoc_development_disclosure",
+        "test_used_for_model_selection",
         "cost_availability",
         "cost_model_shared",
         "constraint_protocol_shared",
@@ -1572,6 +2102,61 @@ def _baseline_metadata(model_name: str) -> dict[str, Any]:
             "optimizer_fallback_rate": pd.NA,
             "rankable_in_unified_table": True,
         }
+    if model_name in P12_P13_NEW_MODEL_NAMES:
+        algorithm = (
+            "graph_transformer_risk_constrained_actor_critic_lite"
+            if model_name in P13_GT_RCPO_MODEL_NAMES
+            else f"cage_eiie_{model_name.removeprefix('cage_eiie_')}"
+        )
+        return {
+            "paper_model_id": model_name,
+            "child_model_name": model_name,
+            "baseline_family": "new_model_extension",
+            "training_algorithm": algorithm,
+            "rl_training": True,
+            "platform_native_rl_training": True,
+            "proxy_training": False,
+            "external_original_implementation": False,
+            "source_code_vendored": False,
+            "license": pd.NA,
+            "data_protocol": "platform",
+            "execution_protocol": "platform_backtest_engine",
+            "evaluation_protocol": "unified_platform",
+            "cost_model_shared": True,
+            "cost_availability": "available",
+            "constraint_protocol_shared": True,
+            "clean_room_reimplementation": True,
+            "algorithm_fidelity": "platform_adapted",
+            "model_extension_id": MODEL_EXTENSION_ID,
+            "post_hoc_development_disclosure": True,
+            "test_used_for_model_selection": False,
+            "rankable_in_unified_table": True,
+        }
+    if model_name in P16_RA_GT_RCPO_MODEL_NAMES:
+        return {
+            "paper_model_id": model_name,
+            "child_model_name": model_name,
+            "baseline_family": "new_model_extension",
+            "training_algorithm": RA_GT_RCPO_ALGORITHM,
+            "rl_training": True,
+            "platform_native_rl_training": True,
+            "proxy_training": False,
+            "external_original_implementation": False,
+            "source_code_vendored": False,
+            "license": pd.NA,
+            "data_protocol": "platform",
+            "execution_protocol": "platform_backtest_engine",
+            "evaluation_protocol": "unified_platform",
+            "cost_model_shared": True,
+            "cost_availability": "available",
+            "constraint_protocol_shared": True,
+            "clean_room_reimplementation": True,
+            "algorithm_fidelity": "platform_native",
+            "model_extension_id": RA_GT_RCPO_MODEL_EXTENSION_ID,
+            "post_hoc_development_disclosure": True,
+            "test_used_for_model_selection": False,
+            "rankable_in_unified_table": True,
+        }
     if model_name in PROXY_BASELINES:
         return {
             "baseline_family": "neural_proxy",
@@ -1639,6 +2224,8 @@ def _baseline_metadata(model_name: str) -> dict[str, Any]:
     if model_name in TRADITIONAL_BASELINE_NAMES:
         return {
             "baseline_family": "traditional",
+            "deterministic_baseline": True,
+            "n_independent_seeds": 1,
             "training_algorithm": "deterministic_strategy",
             "rl_training": False,
             "platform_native_rl_training": False,

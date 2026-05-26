@@ -53,6 +53,10 @@ EXPECTED_TOP_LEVEL_KEYS = {
     "uncertainty",
     "distributional_cvar",
     "partial_rebalance",
+    "new_model_protocol",
+    "cage_eiie",
+    "gt_rcpo_lite",
+    "ra_gt_rcpo",
     "training",
     "optimizer",
     "scheduler",
@@ -60,6 +64,9 @@ EXPECTED_TOP_LEVEL_KEYS = {
     "evaluation",
     "statistics",
     "hpo",
+    "protocol",
+    "rankability",
+    "paper_run_guard",
     "experiment",
     "full_reproduction",
     "device",
@@ -110,8 +117,10 @@ def test_defaults_are_filled(tmp_path):
     assert len(config["config_hash"]) == 64
     int(config["config_hash"], 16)
     assert config["data"]["root"] == "data"
-    assert config["data"]["asset_universe_path"] == "data/processed/asset_universe.csv"
+    assert config["data"]["asset_universe_path"] == "data/processed/core13_asset_universe.csv"
     assert config["data"]["metrics_factory"]["enabled"] is True
+    assert config["data"]["start_date"] == "2014-01-01"
+    assert config["data"]["strict_common_history_mode"] is False
     assert config["execution_model"]["execution_price"] == "next_open"
     assert config["execution_model"]["strict_no_lookahead_execution"] is True
     assert config["execution_model"]["delayed_action_execution"] is False
@@ -126,6 +135,8 @@ def test_defaults_are_filled(tmp_path):
     assert config["cost_model"]["calibration"]["min_bucket_samples"] == 30
     assert config["model"]["default_encoder"] == "cnn"
     assert config["model"]["encoder"]["type"] == "cnn"
+    assert config["model"]["encoder"]["kernel_size_time"] == 3
+    assert config["model"]["encoder"]["kernel_size_asset"] == 3
     assert config["model"]["encoder"]["cross_asset_attention"]["enabled"] is False
     assert config["preference"]["omega"] == [0.20, 0.20, 0.20, 0.20, 0.20]
     assert config["ppo"]["entropy_coef"] == 0.01
@@ -602,7 +613,11 @@ def test_config_hash_is_stable(tmp_path):
 
 
 def test_all_config_files_load():
-    config_paths = sorted((PROJECT_ROOT / "configs").rglob("*.yaml"))
+    config_paths = sorted(
+        path
+        for path in (PROJECT_ROOT / "configs").rglob("*.yaml")
+        if "configs/data" not in path.as_posix()
+    )
     assert config_paths
 
     loaded_types = set()

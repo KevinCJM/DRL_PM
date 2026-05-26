@@ -402,6 +402,25 @@ BASELINE_DAILY_DIAGNOSTICS_COLUMNS = (
     "paper_model_id",
     "seed",
     "fold_id",
+    "model_extension_id",
+    "post_hoc_development_disclosure",
+    "test_used_for_model_selection",
+    "gate_action",
+    "gate_action_index",
+    "rho",
+    "rebalance_intensity",
+    "rebalance_values",
+    "candidate_turnover",
+    "estimated_turnover",
+    "realized_turnover",
+    "estimated_cost",
+    "realized_cost",
+    "scheduler_allowed_rebalance",
+    "forced_hold_reason",
+    "CVaR_loss_5",
+    "drawdown",
+    "candidate_weights_json",
+    "executed_weights_json",
     "hierarchy_action",
     "hierarchy_action_name",
     "ppo_actor_update_mask",
@@ -437,6 +456,9 @@ BASELINE_TRAINING_SUMMARY_COLUMNS = (
     "proxy_training",
     "external_original_implementation",
     "rankable_in_unified_table",
+    "model_extension_id",
+    "post_hoc_development_disclosure",
+    "test_used_for_model_selection",
     "clean_room_reimplementation",
     "algorithm_fidelity",
     "dqn_role",
@@ -541,6 +563,30 @@ EXTRA_METRIC_FRAME_OUTPUTS = (
     "hpo_model_final_daily_rebalance",
     "hpo_model_final_daily_costs",
     HPO_MODEL_FINAL_DAILY_DIAGNOSTICS,
+    "gate_actions",
+    "gate_action_summary",
+    "cage_eiie_candidate_weights",
+    "cage_final_weights",
+    "turnover_cost_breakdown",
+    "risk_metrics",
+    "validation_selection_report",
+    "hpo_model_final_gate_actions",
+    "hpo_model_final_gate_action_summary",
+    "hpo_model_final_cage_eiie_candidate_weights",
+    "hpo_model_final_cage_final_weights",
+    "hpo_model_final_turnover_cost_breakdown",
+    "hpo_model_final_risk_metrics",
+    "hpo_model_final_validation_selection_report",
+    "ra_gt_rcpo_daily_diagnostics",
+    "ra_gt_rcpo_constraint_multipliers",
+    "ra_gt_rcpo_graph_diagnostics",
+    "ra_gt_rcpo_actor_critic_training_history",
+    "ra_gt_rcpo_risk_decomposition",
+    "hpo_model_final_ra_gt_rcpo_daily_diagnostics",
+    "hpo_model_final_ra_gt_rcpo_constraint_multipliers",
+    "hpo_model_final_ra_gt_rcpo_graph_diagnostics",
+    "hpo_model_final_ra_gt_rcpo_actor_critic_training_history",
+    "hpo_model_final_ra_gt_rcpo_risk_decomposition",
     "paper_main_comparison",
     "paper_diagnostic_comparison",
     "paper_paired_statistics",
@@ -652,6 +698,10 @@ def _write_log_outputs(
         _value(result, "fixed_ratio_weights") or {"status": "not_applicable"},
         logs_dir / "fixed_ratio_weights.json",
     )
+    artifacts["new_model_sidecar_manifest"] = save_json_atomic(
+        _value(result, "new_model_sidecar_manifest") or {"status": "not_applicable"},
+        logs_dir / "new_model_sidecar_manifest.json",
+    )
     artifacts["run_manifest"] = save_json_atomic(manifest, logs_dir / "run_manifest.json")
     return artifacts
 
@@ -674,6 +724,9 @@ def _run_manifest(
     data_cfg = _mapping(cfg.get("data"))
     data_governance = dict(_mapping(cfg.get("data_governance")))
     execution_model = dict(_mapping(cfg.get("execution_model")))
+    protocol = _mapping(cfg.get("protocol"))
+    new_model_protocol = _mapping(cfg.get("new_model_protocol"))
+    rankability = dict(_mapping(cfg.get("rankability")))
     portfolio = _mapping(cfg.get("portfolio"))
     metrics_factory = _mapping(data_cfg.get("metrics_factory"))
     reproducibility = _mapping(cfg.get("reproducibility"))
@@ -706,6 +759,52 @@ def _run_manifest(
         or existing.get("idealized_execution")
         or same_close_idealized_execution_enabled
     )
+    data_mode = _first_not_none(
+        data_cfg.get("data_mode"),
+        existing.get("data_mode"),
+        "strict_common_history" if data_cfg.get("strict_common_history_mode") is True else "availability_mask",
+    )
+    valuation_source = _first_not_none(
+        existing.get("valuation_source"),
+        data_governance.get("valuation_source"),
+        data_governance.get("return_source"),
+    )
+    return_source = _first_not_none(existing.get("return_source"), data_governance.get("return_source"), valuation_source)
+    reward_return_source = _first_not_none(data_governance.get("reward_return_source"), existing.get("reward_return_source"))
+    metrics_return_source = _first_not_none(data_governance.get("metrics_return_source"), existing.get("metrics_return_source"))
+    execution_price_source = _first_not_none(
+        data_governance.get("execution_price_source"),
+        existing.get("execution_price_source"),
+    )
+    valuation_execution_split = bool(
+        _first_not_none(
+            existing.get("valuation_execution_split"),
+            data_governance.get("valuation_execution_split"),
+            False,
+        )
+    )
+    reward_valuation_split = bool(
+        _first_not_none(
+            existing.get("reward_valuation_split"),
+            data_governance.get("reward_valuation_split"),
+            False,
+        )
+    )
+    rankable_in_unified_table = bool(
+        _first_not_none(
+            _value(result, "rankable_in_unified_table"),
+            rankability.get("rankable_in_unified_table"),
+            existing.get("rankable_in_unified_table"),
+            False,
+        )
+    )
+    diagnostic_status = _first_not_none(
+        _value(result, "diagnostic_status"),
+        rankability.get("diagnostic_status"),
+        existing.get("diagnostic_status"),
+        "diagnostic",
+    )
+    availability_mask_contract = dict(_mapping(_value(result, "availability_mask_contract")))
     manifest = {
         "run_id": _first_not_none(existing.get("run_id"), _value(result, "run_id"), run_name),
         "timestamp": existing.get("timestamp") or now,
@@ -755,6 +854,65 @@ def _run_manifest(
         "best_trial_number": _first_not_none(existing.get("best_trial_number"), _value(result, "best_trial_number")),
         "seed": _first_not_none(reproducibility.get("seed"), existing.get("seed"), _value(result, "seed")),
         "fold_id": fold_id,
+        "protocol_id": _first_not_none(protocol.get("protocol_id"), existing.get("protocol_id")),
+        "asset_universe_id": _first_not_none(protocol.get("asset_universe_id"), existing.get("asset_universe_id")),
+        "data_cutoff_date": _first_not_none(protocol.get("data_cutoff_date"), existing.get("data_cutoff_date")),
+        "base_protocol_id": _first_not_none(new_model_protocol.get("base_protocol_id"), existing.get("base_protocol_id")),
+        "model_extension_id": _first_not_none(
+            new_model_protocol.get("model_extension_id"),
+            existing.get("model_extension_id"),
+            _value(result, "model_extension_id"),
+        ),
+        "post_hoc_development_disclosure": bool(
+            _first_not_none(
+                new_model_protocol.get("post_hoc_development_disclosure"),
+                existing.get("post_hoc_development_disclosure"),
+                False,
+            )
+        ),
+        "selection_split": _first_not_none(
+            _mapping(cfg.get("hpo")).get("selection_split"),
+            new_model_protocol.get("selection_split"),
+            existing.get("selection_split"),
+        ),
+        "test_used_for_model_selection": bool(
+            _first_not_none(
+                new_model_protocol.get("test_used_for_model_selection"),
+                existing.get("test_used_for_model_selection"),
+                False,
+            )
+        ),
+        "data_mode": data_mode,
+        "data_contract": {
+            "data_mode": data_mode,
+            "strict_common_history_mode": bool(data_cfg.get("strict_common_history_mode", False)),
+            "return_source": return_source,
+            "valuation_source": valuation_source,
+            "reward_return_source": reward_return_source,
+            "metrics_return_source": metrics_return_source,
+            "execution_price_source": execution_price_source,
+        },
+        "valuation_source": valuation_source,
+        "return_source": return_source,
+        "reward_return_source": reward_return_source,
+        "metrics_return_source": metrics_return_source,
+        "execution_price_source": execution_price_source,
+        "valuation_execution_split": valuation_execution_split,
+        "reward_valuation_split": reward_valuation_split,
+        "rankability": {
+            **rankability,
+            "rankable_in_unified_table": rankable_in_unified_table,
+            "diagnostic_status": diagnostic_status,
+        },
+        "rankable_in_unified_table": rankable_in_unified_table,
+        "diagnostic_status": diagnostic_status,
+        "availability_mask_contract": availability_mask_contract,
+        "availability_mask_contract_passed": availability_mask_contract.get("availability_mask_contract_passed"),
+        "min_available_assets_per_date": availability_mask_contract.get("min_available_assets_per_date"),
+        "unavailable_asset_weight_abs_max": availability_mask_contract.get("unavailable_asset_weight_abs_max"),
+        "daily_returns_finite": availability_mask_contract.get("daily_returns_finite"),
+        "daily_nav_finite": availability_mask_contract.get("daily_nav_finite"),
+        "frozen_or_imputed_valuation_count": availability_mask_contract.get("frozen_or_imputed_valuation_count"),
     }
     if overrides:
         manifest.update(dict(overrides))

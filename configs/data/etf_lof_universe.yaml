@@ -1,0 +1,87 @@
+description: Default ETF/LOF universe used by the platform data rebuild script.
+assets:
+  - ts_code: 510050.SH
+    symbol: "510050"
+    name: 上证50ETF
+    asset_type: ETF
+    pool: equity
+  - ts_code: 159915.SZ
+    symbol: "159915"
+    name: 创业板ETF
+    asset_type: ETF
+    pool: equity
+  - ts_code: 159912.SZ
+    symbol: "159912"
+    name: 沪深300ETF
+    asset_type: ETF
+    pool: equity
+  - ts_code: 512500.SH
+    symbol: "512500"
+    name: 中证500ETF华夏
+    asset_type: ETF
+    pool: equity
+  - ts_code: 164701.SZ
+    symbol: "164701"
+    name: 汇添富黄金及贵金属LOF
+    asset_type: LOF
+    pool: commodity
+  - ts_code: 511010.SH
+    symbol: "511010"
+    name: 国债ETF
+    asset_type: ETF
+    pool: bond
+  - ts_code: 513100.SH
+    symbol: "513100"
+    name: 纳指ETF
+    asset_type: ETF
+    pool: overseas_equity
+  - ts_code: 513030.SH
+    symbol: "513030"
+    name: 德国ETF
+    asset_type: ETF
+    pool: overseas_equity
+  - ts_code: 513080.SH
+    symbol: "513080"
+    name: 法国CAC40ETF
+    asset_type: ETF
+    pool: overseas_equity
+  - ts_code: 513520.SH
+    symbol: "513520"
+    name: 日经ETF
+    asset_type: ETF
+    pool: overseas_equity
+  - ts_code: 518880.SH
+    symbol: "518880"
+    name: 黄金ETF
+    asset_type: ETF
+    pool: commodity
+  - ts_code: 161226.SZ
+    symbol: "161226"
+    name: 国投白银LOF
+    asset_type: LOF
+    pool: commodity
+  - ts_code: 501018.SH
+    symbol: "501018"
+    name: 南方原油LOF
+    asset_type: LOF
+    pool: commodity
+  - ts_code: 159981.SZ
+    symbol: "159981"
+    name: 能源化工ETF
+    asset_type: ETF
+    pool: commodity
+  - ts_code: 159985.SZ
+    symbol: "159985"
+    name: 豆粕ETF
+    asset_type: ETF
+    pool: commodity
+  - ts_code: 159980.SZ
+    symbol: "159980"
+    name: 有色ETF
+    asset_type: ETF
+    pool: commodity
+  - ts_code: 511990.SH
+    symbol: "511990"
+    name: 华宝添益货币ETF
+    asset_type: ETF
+    pool: money_market

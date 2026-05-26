@@ -50,6 +50,8 @@ class CNNEncoder(EncoderBase):
         if not channels:
             raise ValueError("ERR_MODEL_CONFIG_INVALID: encoder.cnn_channels")
         kernel_size = (int(kernel_size_time), int(kernel_size_asset))
+        if kernel_size[0] <= 0 or kernel_size[1] <= 0:
+            raise ValueError("ERR_MODEL_CONFIG_INVALID: encoder.kernel_size")
         padding = (kernel_size[0] // 2, kernel_size[1] // 2)
 
         layers: list[nn.Module] = []

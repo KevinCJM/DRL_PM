@@ -72,6 +72,32 @@ HPO_FINAL_REPORT_BASE_COLUMNS = (
     "selection_split",
     "evaluated_checkpoint_path",
 )
+HPO_SEARCH_SPACE_MANIFEST_COLUMNS = (
+    "model_name",
+    "param_name",
+    "param_type",
+    "low",
+    "high",
+    "choices",
+    "log_scale",
+    "is_shared_across_models",
+    "is_model_specific",
+    "rationale",
+)
+NEW_MODEL_HPO_FINAL_FRAME_NAMES = (
+    "gate_actions",
+    "gate_action_summary",
+    "cage_eiie_candidate_weights",
+    "cage_final_weights",
+    "turnover_cost_breakdown",
+    "risk_metrics",
+    "validation_selection_report",
+    "ra_gt_rcpo_daily_diagnostics",
+    "ra_gt_rcpo_constraint_multipliers",
+    "ra_gt_rcpo_graph_diagnostics",
+    "ra_gt_rcpo_actor_critic_training_history",
+    "ra_gt_rcpo_risk_decomposition",
+)
 HYBRID_DQN_OPTIMIZER_CHILD_MODEL_NAME_SET = frozenset(HYBRID_DQN_OPTIMIZER_CHILD_MODEL_NAMES)
 HYBRID_DQN_DIAGNOSTIC_RUN_MODES = {"smoke", "diagnostic"}
 PROXY_HPO_MODEL_NAMES = {
@@ -95,6 +121,24 @@ NATIVE_HPO_MODEL_NAMES = {
     "eiie_native",
     "pgportfolio_eiie_native",
     "ppo_dqn_hierarchical_reimplementation",
+    "cage_eiie_frozen_gate",
+    "cage_eiie_multilevel_gate",
+    "cage_eiie_distributional",
+    "cage_eiie_no_cvar",
+    "cage_eiie_distributional_no_cvar",
+    "cage_eiie_joint_light",
+    "cage_eiie_fixed_rho_25",
+    "cage_eiie_fixed_rho_50",
+    "cage_eiie_fixed_rho_75",
+    "graph_transformer_risk_constrained_actor_critic_lite",
+    "gt_rcpo_lite",
+    "risk_aware_graph_transformer_constrained_actor_critic",
+    "ra_gt_rcpo_no_graph",
+    "ra_gt_rcpo_no_transformer",
+    "ra_gt_rcpo_no_cvar_constraint",
+    "ra_gt_rcpo_no_cost_constraint",
+    "ra_gt_rcpo_no_turnover_constraint",
+    "ra_gt_rcpo_mlp_actor_critic",
     *HYBRID_DQN_OPTIMIZER_CHILD_MODEL_NAMES,
 }
 NON_NATIVE_HPO_MODEL_NAMES = PROXY_HPO_MODEL_NAMES | {
@@ -179,6 +223,8 @@ def run_hpo(experiment: HPOExperiment) -> Mapping[str, Any]:
         if len(models) > 1 and not getattr(experiment, "active_model_name", None):
             result = dict(_run_equal_budget_hpo(experiment, models))
         else:
+            if len(models) == 1 and not getattr(experiment, "active_model_name", None):
+                setattr(experiment, "active_model_name", models[0])
             result = dict(_run_hpo_single(experiment))
     else:
         result = dict(_run_hpo_single(experiment))
@@ -191,6 +237,7 @@ def _run_per_seed_hpo(experiment: HPOExperiment) -> Mapping[str, Any]:
     run_dir = experiment.context.run_dir
     if run_dir is None:
         raise ConfigError("ERR_EXPERIMENT_OUTPUT_DIR_MISSING", "output.root", "ERR_EXPERIMENT_OUTPUT_DIR_MISSING")
+    _write_hpo_search_space_manifest(config, _hpo_manifest_model_names(config), run_dir / "logs" / "hpo_search_space_manifest.csv")
     seed_payloads: list[dict[str, Any]] = []
     for seed in _hpo_seed_values(config):
         seed_key = _safe_hpo_model_key(f"seed_{seed}")
@@ -231,6 +278,7 @@ def _run_equal_budget_hpo(experiment: HPOExperiment, model_names: Sequence[str])
     run_dir = experiment.context.run_dir
     if run_dir is None:
         raise ConfigError("ERR_EXPERIMENT_OUTPUT_DIR_MISSING", "output.root", "ERR_EXPERIMENT_OUTPUT_DIR_MISSING")
+    _write_hpo_search_space_manifest(config, model_names, run_dir / "logs" / "hpo_search_space_manifest.csv")
     direction = str(_mapping(config.get("hpo")).get("direction") or "maximize")
     diagnostic_run = _is_explicit_hybrid_diagnostic_run(config)
     parent_rows: list[pd.DataFrame] = []
@@ -331,6 +379,10 @@ def _run_equal_budget_hpo(experiment: HPOExperiment, model_names: Sequence[str])
     final_diagnostics = _hpo_model_final_frame(model_payloads, "baseline_daily_diagnostics")
     if not final_diagnostics.empty or len(final_diagnostics.columns) > 0:
         result["hpo_model_final_daily_diagnostics"] = final_diagnostics
+    for frame_name in NEW_MODEL_HPO_FINAL_FRAME_NAMES:
+        final_frame = _hpo_model_final_frame(model_payloads, frame_name)
+        if not final_frame.empty or len(final_frame.columns) > 0:
+            result[f"hpo_model_final_{frame_name}"] = final_frame
     result["hpo_trials"] = pd.concat(parent_rows, ignore_index=True) if parent_rows else pd.DataFrame(columns=HPO_TRIAL_COLUMNS)
     _write_hpo_trials_csv(result["hpo_trials"].to_dict("records"), run_dir / "logs" / "hpo_trials.csv")
     if child_failures:
@@ -480,6 +532,18 @@ def _combined_seed_hpo_result(config: Mapping[str, Any], seed_payloads: Sequence
         "hpo_model_final_daily_rebalance",
         "hpo_model_final_daily_costs",
         "hpo_model_final_daily_diagnostics",
+        "hpo_model_final_gate_actions",
+        "hpo_model_final_gate_action_summary",
+        "hpo_model_final_cage_eiie_candidate_weights",
+        "hpo_model_final_cage_final_weights",
+        "hpo_model_final_turnover_cost_breakdown",
+        "hpo_model_final_risk_metrics",
+        "hpo_model_final_validation_selection_report",
+        "hpo_model_final_ra_gt_rcpo_daily_diagnostics",
+        "hpo_model_final_ra_gt_rcpo_constraint_multipliers",
+        "hpo_model_final_ra_gt_rcpo_graph_diagnostics",
+        "hpo_model_final_ra_gt_rcpo_actor_critic_training_history",
+        "hpo_model_final_ra_gt_rcpo_risk_decomposition",
     ):
         frame = _hpo_seed_frame(seed_payloads, frame_name)
         if not frame.empty or len(frame.columns) > 0:
@@ -535,6 +599,12 @@ def _apply_orchestration_metadata(result: dict[str, Any], config: Mapping[str, A
     result["long_running"] = bool(config.get("long_running") is True)
 
 
+def _refresh_new_model_artifacts(result: dict[str, Any], config: Mapping[str, Any]) -> None:
+    from src.experiments.pipeline import _new_model_artifacts
+
+    result.update(_new_model_artifacts(result, config=config))
+
+
 def _hpo_equal_budget_enabled(config: Mapping[str, Any]) -> bool:
     hpo_config = _mapping(config.get("hpo"))
     return bool(hpo_config.get("equal_budget_across_models") is True)
@@ -544,8 +614,7 @@ def _hpo_trainable_models(config: Mapping[str, Any]) -> list[str]:
     hpo_config = _mapping(config.get("hpo"))
     explicit = hpo_config.get("trainable_models")
     if explicit:
-        models = _dedupe_strings(_expand_baseline_aliases(explicit))
-        return _filter_hpo_proxy_models(models, hpo_config)
+        return _dedupe_strings(_expand_baseline_aliases(explicit))
     model_config = _mapping(config.get("model"))
     main_model = str(model_config.get("name", "full_dqn_gated_multitask_cnn_ppo"))
     baseline_config = _mapping(config.get("baselines"))
@@ -747,6 +816,7 @@ def _run_hpo_single(experiment: HPOExperiment) -> Mapping[str, Any]:
     validation_split = str(hpo_config.get("selection_split") or "validation")
     final_split = str(hpo_config.get("final_report_split") or "test")
     trials_path = run_dir / "logs" / "hpo_trials.csv"
+    _write_hpo_search_space_manifest(config, _hpo_manifest_model_names(config, experiment), run_dir / "logs" / "hpo_search_space_manifest.csv")
     trial_rows: list[dict[str, Any]] = []
 
     sampler = optuna.samplers.TPESampler(seed=seed)
@@ -860,7 +930,26 @@ def _run_hpo_single(experiment: HPOExperiment) -> Mapping[str, Any]:
             "hpo_model_name": str(getattr(experiment, "active_model_name", config.get("model", {}).get("name", "full_dqn_gated_multitask_cnn_ppo"))),
         }
     )
+    _refresh_new_model_artifacts(payload, config)
+    _attach_single_model_hpo_final_outputs(payload)
     return payload
+
+
+def _attach_single_model_hpo_final_outputs(payload: dict[str, Any]) -> None:
+    payloads = [payload]
+    payload["hpo_model_final_comparison"] = _hpo_model_final_comparison(payloads)
+    payload["hpo_model_final_reports"] = _hpo_model_final_reports(payloads)
+    for frame_name in ("daily_returns", "daily_weights", "daily_turnover", "daily_rebalance", "daily_costs"):
+        final_frame = _hpo_model_final_frame(payloads, frame_name)
+        if not final_frame.empty or len(final_frame.columns) > 0:
+            payload[f"hpo_model_final_{frame_name}"] = final_frame
+    final_diagnostics = _hpo_model_final_frame(payloads, "baseline_daily_diagnostics")
+    if not final_diagnostics.empty or len(final_diagnostics.columns) > 0:
+        payload["hpo_model_final_daily_diagnostics"] = final_diagnostics
+    for frame_name in NEW_MODEL_HPO_FINAL_FRAME_NAMES:
+        final_frame = _hpo_model_final_frame(payloads, frame_name)
+        if not final_frame.empty or len(final_frame.columns) > 0:
+            payload[f"hpo_model_final_{frame_name}"] = final_frame
 
 
 def _run_walk_forward_hpo(experiment: HPOExperiment) -> Mapping[str, Any]:
@@ -868,6 +957,7 @@ def _run_walk_forward_hpo(experiment: HPOExperiment) -> Mapping[str, Any]:
     run_dir = experiment.context.run_dir
     if run_dir is None:
         raise ConfigError("ERR_EXPERIMENT_OUTPUT_DIR_MISSING", "output.root", "ERR_EXPERIMENT_OUTPUT_DIR_MISSING")
+    _write_hpo_search_space_manifest(config, _hpo_manifest_model_names(config), run_dir / "logs" / "hpo_search_space_manifest.csv")
     dataset = load_market_dataset(config)
     splits = create_split(pd.DatetimeIndex(dataset.wide["close"].index), config)
     fold_splits = list(splits) if isinstance(splits, list) else [splits]
@@ -1365,6 +1455,82 @@ def _write_hpo_trials_csv(rows: Sequence[Mapping[str, Any]], path: Path) -> Path
         raise
 
 
+def _hpo_manifest_model_names(config: Mapping[str, Any], experiment: HPOExperiment | None = None) -> list[str]:
+    active_model = None if experiment is None else getattr(experiment, "active_model_name", None)
+    if active_model:
+        return [str(active_model)]
+    if _hpo_equal_budget_enabled(config):
+        return _hpo_trainable_models(config)
+    model_config = _mapping(config.get("model"))
+    return [str(model_config.get("name", "full_dqn_gated_multitask_cnn_ppo"))]
+
+
+def _write_hpo_search_space_manifest(
+    config: Mapping[str, Any],
+    model_names: Sequence[str],
+    path: Path,
+) -> Path:
+    rows = _hpo_search_space_manifest_rows(config, model_names)
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            newline="",
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as fh:
+            temp_path = Path(fh.name)
+            writer = csv.DictWriter(fh, fieldnames=HPO_SEARCH_SPACE_MANIFEST_COLUMNS)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({column: row.get(column, "") for column in HPO_SEARCH_SPACE_MANIFEST_COLUMNS})
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temp_path, target)
+        return target
+    except Exception:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()
+        raise
+
+
+def _hpo_search_space_manifest_rows(config: Mapping[str, Any], model_names: Sequence[str]) -> list[dict[str, Any]]:
+    hpo_config = _mapping(config.get("hpo"))
+    search_space = _mapping(hpo_config.get("search_space"))
+    models = _dedupe_strings(model_names)
+    if not models:
+        models = _hpo_manifest_model_names(config)
+    rows: list[dict[str, Any]] = []
+    for model_name in models:
+        for param_name, raw_spec in search_space.items():
+            spec = _mapping(raw_spec)
+            model_scope = spec.get("models") or spec.get("model_names")
+            model_specific = isinstance(model_scope, Sequence) and not isinstance(model_scope, (str, bytes))
+            if model_specific and str(model_name) not in {str(item) for item in model_scope}:
+                continue
+            choices = spec.get("choices")
+            rows.append(
+                {
+                    "model_name": str(model_name),
+                    "param_name": str(param_name),
+                    "param_type": str(spec.get("type", "")),
+                    "low": spec.get("low", ""),
+                    "high": spec.get("high", ""),
+                    "choices": "" if choices is None else json.dumps(choices, ensure_ascii=False, sort_keys=True),
+                    "log_scale": bool(spec.get("log", spec.get("log_scale", False))),
+                    "is_shared_across_models": not model_specific,
+                    "is_model_specific": model_specific,
+                    "rationale": str(spec.get("rationale", "")),
+                }
+            )
+    return rows
+
+
 def _read_hpo_trials_csv(path: Path) -> Any:
     if not path.exists():
         return []
@@ -1395,6 +1561,12 @@ def _write_run_manifest(
     execution_model = config["execution_model"]
     data_governance = config["data_governance"]
     portfolio = config["portfolio"]
+    protocol = config.get("protocol", {}) if isinstance(config.get("protocol"), Mapping) else {}
+    rankability = config.get("rankability", {}) if isinstance(config.get("rankability"), Mapping) else {}
+    data_config = config.get("data", {}) if isinstance(config.get("data"), Mapping) else {}
+    data_mode = data_config.get("data_mode") or (
+        "strict_common_history" if data_config.get("strict_common_history_mode") is True else "availability_mask"
+    )
     manifest = {
         "run_id": config["output"]["run_name"],
         "status": status,
@@ -1421,6 +1593,29 @@ def _write_run_manifest(
         "result_path": None if result_path is None else str(result_path),
         "result": dict(result or {}),
         "failure_state": None if failure_state is None else dict(failure_state),
+        "protocol_id": protocol.get("protocol_id"),
+        "asset_universe_id": protocol.get("asset_universe_id"),
+        "data_cutoff_date": protocol.get("data_cutoff_date"),
+        "data_mode": data_mode,
+        "data_contract": {
+            "data_mode": data_mode,
+            "strict_common_history_mode": bool(data_config.get("strict_common_history_mode", False)),
+            "return_source": data_governance.get("return_source"),
+            "valuation_source": data_governance.get("valuation_source"),
+            "reward_return_source": data_governance.get("reward_return_source"),
+            "metrics_return_source": data_governance.get("metrics_return_source"),
+            "execution_price_source": data_governance.get("execution_price_source"),
+        },
+        "valuation_source": data_governance.get("valuation_source"),
+        "return_source": data_governance.get("return_source"),
+        "reward_return_source": data_governance.get("reward_return_source"),
+        "metrics_return_source": data_governance.get("metrics_return_source"),
+        "execution_price_source": data_governance.get("execution_price_source"),
+        "valuation_execution_split": bool(data_governance.get("valuation_execution_split", False)),
+        "reward_valuation_split": bool(data_governance.get("reward_valuation_split", False)),
+        "rankability": dict(rankability),
+        "rankable_in_unified_table": bool(rankability.get("rankable_in_unified_table", False)),
+        "diagnostic_status": rankability.get("diagnostic_status", "diagnostic"),
     }
     if result is not None and "best_trial_number" in result:
         manifest["best_trial_number"] = result["best_trial_number"]

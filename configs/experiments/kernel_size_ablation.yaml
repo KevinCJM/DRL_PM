@@ -1,0 +1,7 @@
+experiment:
+  type: kernel_size_ablation
+output:
+  run_name: kernel_size_ablation
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

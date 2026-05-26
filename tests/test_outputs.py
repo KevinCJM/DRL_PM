@@ -523,7 +523,12 @@ def test_paper_aggregate_generates_main_stats_and_seed_summary(tmp_path):
         "paper_paired_statistics",
         "paper_seed_summary",
         "closest_hybrid_figure_source",
+        "paper_aggregate_dedup_report",
+        "source_run_dirs",
+        "diagnostic_status",
+        "paper_aggregate_manifest",
     }
+    assert "n_unique_return_series" in set(seed_summary.columns)
     assert "model" in set(main["model_name"])
     assert "model" in set(main["paper_model_id"])
     assert "hybrid_dqn_optimizer_equal_weight" in set(main["paper_model_id"])

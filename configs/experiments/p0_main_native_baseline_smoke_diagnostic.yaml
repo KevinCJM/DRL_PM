@@ -1,0 +1,45 @@
+experiment:
+  type: baseline_comparison
+data:
+  metrics_factory:
+    enabled: false
+feature_matrix:
+  input_matrix_id: M0
+feature_reduction:
+  pca:
+    enabled: false
+baselines:
+  enabled: true
+  traditional:
+    - equal_weight
+  deep: []
+  native_rl:
+    enabled_models:
+      - ppo_native
+      - dqn_template_native
+      - pgportfolio_eiie_native
+    epochs: 1
+    max_train_steps: 16
+    max_validation_steps: 16
+    max_gradient_updates_per_epoch: 4
+dqn:
+  batch_size: 8
+  warmup_steps: 4
+  target_update_interval: 8
+  use_prioritized_replay: false
+  per_enabled: false
+training:
+  epochs: 1
+  max_train_steps: 16
+  max_validation_steps: 16
+  checkpoint_include_replay_buffer: false
+hpo:
+  enabled: false
+reproducibility:
+  seed: 42
+  seeds: [42]
+output:
+  run_name: DIAG_P0_main_native_legacy_smoke
+security:
+  path_whitelist:
+    - /Users/chenjunming/Desktop/DRL_PM

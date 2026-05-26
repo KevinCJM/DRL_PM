@@ -1,0 +1,80 @@
+description: Core-13 ETF/LOF universe for formal paper experiments.
+assets:
+  - ts_code: 510300.SH
+    symbol: "510300"
+    name: 沪深300ETF华泰柏瑞
+    asset_type: ETF
+    pool: cn_equity
+    asset_bucket: A股宽基/风格
+  - ts_code: 510500.SH
+    symbol: "510500"
+    name: 中证500ETF南方
+    asset_type: ETF
+    pool: cn_equity
+    asset_bucket: A股宽基/风格
+  - ts_code: 510050.SH
+    symbol: "510050"
+    name: 上证50ETF华夏
+    asset_type: ETF
+    pool: cn_equity
+    asset_bucket: A股宽基/风格
+  - ts_code: 159915.SZ
+    symbol: "159915"
+    name: 创业板ETF易方达
+    asset_type: ETF
+    pool: cn_equity
+    asset_bucket: A股宽基/风格
+  - ts_code: 510880.SH
+    symbol: "510880"
+    name: 红利ETF华泰柏瑞
+    asset_type: ETF
+    pool: cn_equity
+    asset_bucket: A股宽基/风格
+  - ts_code: 159920.SZ
+    symbol: "159920"
+    name: 恒生ETF华夏
+    asset_type: ETF
+    pool: overseas_equity
+    asset_bucket: 港股/海外权益
+  - ts_code: 513100.SH
+    symbol: "513100"
+    name: 纳指ETF国泰
+    asset_type: ETF
+    pool: overseas_equity
+    asset_bucket: 港股/海外权益
+  - ts_code: 513500.SH
+    symbol: "513500"
+    name: 标普500ETF博时
+    asset_type: ETF
+    pool: overseas_equity
+    asset_bucket: 港股/海外权益
+  - ts_code: 518880.SH
+    symbol: "518880"
+    name: 黄金ETF华安
+    asset_type: ETF
+    pool: commodity_energy
+    asset_bucket: 黄金/贵金属
+  - ts_code: 160216.SZ
+    symbol: "160216"
+    name: 国泰大宗商品(QDII-LOF)A
+    asset_type: LOF
+    pool: commodity_energy
+    asset_bucket: 商品/能源
+  - ts_code: 160416.SZ
+    symbol: "160416"
+    name: 华安标普全球石油指数(LOF)A
+    asset_type: LOF
+    pool: commodity_energy
+    asset_bucket: 商品/能源
+  - ts_code: 511010.SH
+    symbol: "511010"
+    name: 国债ETF国泰
+    asset_type: ETF
+    pool: defensive
+    asset_bucket: 债券/固收
+  - ts_code: 511880.SH
+    symbol: "511880"
+    name: 银华日利ETF
+    asset_type: ETF
+    pool: defensive
+    asset_bucket: 现金/货币

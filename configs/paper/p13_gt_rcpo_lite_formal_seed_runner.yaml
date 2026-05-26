@@ -1,0 +1,71 @@
+experiment:
+  type: hyperparameter_sweep
+long_running: false
+data_governance:
+  return_source: adj_nav
+  valuation_source: adj_nav
+  reward_return_source: adj_nav
+  metrics_return_source: adj_nav
+  execution_price_source: ohlcv
+  valuation_table: core13_adj_nav
+  execution_price_table: core13_ohlcv
+  valuation_execution_split: true
+  reward_valuation_split: true
+baselines:
+  traditional: []
+  deep: []
+  native_rl:
+    enabled_models:
+    - graph_transformer_risk_constrained_actor_critic_lite
+    epochs: 2
+    max_train_steps: 128
+    max_validation_steps: 128
+    max_gradient_updates_per_epoch: 16
+gt_rcpo_lite:
+  enabled: true
+hpo:
+  enabled: true
+  equal_budget_across_models: true
+  n_trials_per_model: 50
+  metric: validation_sharpe_minus_drawdown_turnover_penalty
+  objective: validation_sharpe_minus_drawdown_turnover_penalty
+  direction: maximize
+  selection_split: validation
+  final_report_split: test
+  trainable_models:
+  - graph_transformer_risk_constrained_actor_critic_lite
+  search_space:
+    gt_rcpo_lite.lambda_turnover:
+      type: float
+      low: 0.5
+      high: 4.0
+    gt_rcpo_lite.lambda_cvar:
+      type: float
+      low: 0.0
+      high: 1.0
+new_model_protocol:
+  phase: P13.3_formal_scout
+  model_extension_id: core13_v2_p12_p13_20260524
+  selection_split: validation
+  test_used_for_model_selection: false
+training:
+  epochs: 2
+  max_train_steps: 128
+  max_validation_steps: 128
+  checkpoint_include_replay_buffer: false
+reproducibility:
+  seed: 42
+  seeds:
+  - 42
+output:
+  run_name: P13_gt_rcpo_lite_formal_seed_runner
+protocol:
+  protocol_id: core13_v2_full_reset_20260522
+  asset_universe_id: core13_v2
+  data_cutoff_date: '2026-05-20'
+rankability:
+  rankable_in_unified_table: true
+  diagnostic_status: formal
+security:
+  path_whitelist:
+  - /Users/chenjunming/Desktop/DRL_PM
