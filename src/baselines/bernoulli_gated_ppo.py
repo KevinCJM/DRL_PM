@@ -111,10 +111,15 @@ class BernoulliGatedPPOStrategy(PPOBaselineStrategy):
             PortfolioAction(
                 target_weights=target_weights,
                 rebalance_action=rebalance_action,
-                rebalance_intensity=1.0,
+                rebalance_intensity=1.0 if rebalance_action else 0.0,
                 action_info={
                     "strategy": self.strategy_name,
                     "gate_action": rebalance_action,
+                    "raw_model_requested_rebalance": bool(rebalance_action),
+                    "raw_action": int(rebalance_action),
+                    "raw_rho": 1.0 if rebalance_action else 0.0,
+                    "raw_rebalance_intensity": 1.0 if rebalance_action else 0.0,
+                    "rebalance_intensity": 1.0 if rebalance_action else 0.0,
                     "gate_log_prob": gate_log_prob_value,
                     "decision_log_prob": gate_log_prob_value,
                     "candidate_log_prob": policy_log_prob,

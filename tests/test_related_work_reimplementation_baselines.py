@@ -31,6 +31,7 @@ from src.baselines.hybrid_dqn_optimizer_reimplementation import (
 )
 from src.baselines.ppo_dqn_hierarchical_reimplementation import (
     PPO_DQN_HIERARCHY_ACTION_DIM,
+    PPO_DQN_HIERARCHY_HOLD_ACTION,
     PPO_DQN_HIERARCHY_ACTION_NAMES,
     PPODQNHierarchicalReimplementationStrategy,
 )
@@ -1266,6 +1267,21 @@ def test_hybrid_action_info_contract():
     assert action_info["optimizer_name"] == "equal_weight"
     assert (action_info["optimizer_status"] != "success" or action_info["fallback_reason"] is not None) is False
 
+    hold_portfolio_state = PortfolioState(
+        date=pd.Timestamp("2024-01-05"),
+        nav=1.0,
+        portfolio_value=1000000.0,
+        current_weights=np.array([0.5, 0.5, 0.0], dtype=float),
+        step_index=4,
+    )
+    hold_action = strategy.compute_target_weights(decision_state, hold_portfolio_state)
+
+    np.testing.assert_allclose(hold_action.target_weights, np.array([0.5, 0.5, 0.0], dtype=np.float32))
+    assert hold_action.rebalance_action == 0
+    assert hold_action.rebalance_intensity == 0.0
+    assert hold_action.action_info["estimated_turnover"] == pytest.approx(0.0)
+    assert hold_action.action_info["forced_hold_reason"] == "below_rebalance_turnover_threshold"
+
     fallback_strategy = HybridDQNOptimizerMarkowitzMeanVarianceStrategy(config)
     fallback_strategy.is_fitted = True
     fallback_strategy._asset_action_q_values = lambda decision_input: q_values
@@ -1318,7 +1334,7 @@ def test_validation_penalized_sharpe_alias():
         experiment_pipeline.objective_metric({"metrics": {"cumulative_return": 0.123}}, "unknown_metric")
 
 
-def test_ppo_dqn_initializes_five_hierarchy_actions():
+def test_ppo_dqn_initializes_six_hierarchy_actions():
     config = {
         "n_assets": 3,
         "n_features": 2,
@@ -1405,6 +1421,7 @@ def test_ppo_dqn_resolves_all_hierarchy_actions():
         2: (np.array([0.30, 0.70, 0.0], dtype=np.float32), "blend_current_ppo_50", 1, 0.50, True),
         3: (np.array([0.35, 0.65, 0.0], dtype=np.float32), "blend_current_ppo_75", 1, 0.75, True),
         4: (np.array([0.50, 0.50, 0.0], dtype=np.float32), "fallback_equal_weight", 0, 0.0, False),
+        5: (np.array([0.20, 0.80, 0.0], dtype=np.float32), "hold", 0, 0.0, False),
     }
 
     for action, (weights, name, actor_mask, attribution_weight, surrogate) in expected.items():
@@ -1418,6 +1435,60 @@ def test_ppo_dqn_resolves_all_hierarchy_actions():
         assert action_info["ppo_actor_update_mask"] == actor_mask
         assert action_info["ppo_attribution_weight"] == pytest.approx(attribution_weight)
         assert action_info["platform_adapted_surrogate"] is surrogate
+
+
+def test_ppo_dqn_policy_hold_action_does_not_rebalance():
+    config = {
+        "n_assets": 3,
+        "n_features": 1,
+        "window_size": 2,
+        "latent_dim": 4,
+        "encoder": {"type": "mlp", "dropout": 0.0},
+        "ppo": {"actor_hidden_dims": [4], "critic_hidden_dims": [4]},
+        "dqn": {"hidden_dims": [4], "per_enabled": False, "use_n_step": False},
+        "device": {"mode": "cpu"},
+    }
+    strategy = PPODQNHierarchicalReimplementationStrategy(config)
+    strategy.is_fitted = True
+
+    class _HoldQ(torch.nn.Module):
+        def forward(self, latent, candidate_weights, current_weights, estimated_turnover, estimated_cost):
+            q_values = torch.zeros((latent.shape[0], PPO_DQN_HIERARCHY_ACTION_DIM), dtype=torch.float32, device=latent.device)
+            q_values[:, PPO_DQN_HIERARCHY_HOLD_ACTION] = 1.0
+            return q_values
+
+    strategy.hierarchy_q_network = _HoldQ()
+    decision_state = DecisionMarketState(
+        decision_date=pd.Timestamp("2024-01-05"),
+        available_mask_at_decision=np.array([True, True, False], dtype=bool),
+        availability_reason_at_decision=np.array(["listed", "listed", "suspended"], dtype=object),
+        close_at_decision=np.ones(3, dtype=float),
+        log_return_at_decision=np.zeros(3, dtype=float),
+        log_return_window=np.zeros((20, 3), dtype=np.float32),
+        amount_at_decision=np.ones(3, dtype=float),
+        volume_at_decision=np.ones(3, dtype=float),
+        adv20_at_decision=np.ones(3, dtype=float),
+        volatility_20d_at_decision=np.ones(3, dtype=float) * 0.02,
+        turnover_rate_at_decision=np.ones(3, dtype=float) * 0.01,
+        feature_window=np.zeros((1, 2, 3), dtype=float),
+        market_image=np.zeros((1, 2, 3), dtype=float),
+    )
+    portfolio_state = PortfolioState(
+        date=pd.Timestamp("2024-01-05"),
+        nav=1.0,
+        portfolio_value=1000000.0,
+        current_weights=np.array([0.2, 0.8, 0.0], dtype=float),
+        step_index=3,
+    )
+
+    action = strategy.compute_target_weights(decision_state, portfolio_state)
+
+    np.testing.assert_allclose(action.target_weights, portfolio_state.current_weights.astype(np.float32))
+    assert action.rebalance_action == 0
+    assert action.rebalance_intensity == 0.0
+    assert action.action_info["hierarchy_action"] == PPO_DQN_HIERARCHY_HOLD_ACTION
+    assert action.action_info["hierarchy_action_name"] == "hold"
+    assert action.action_info["forced_hold_reason"] == "model_chosen_hold"
 
 
 def test_ppo_dqn_invalid_candidate_failure_and_fallback():
@@ -1511,7 +1582,7 @@ def test_ppo_dqn_action_selection_sanitizes_invalid_weights_before_hierarchy_q(s
             assert torch.isfinite(current_weights).all()
             assert torch.isfinite(estimated_turnover).all()
             assert torch.isfinite(estimated_cost).all()
-            return torch.tensor([[0.0, 0.0, 0.0, 0.0, 1.0]], dtype=torch.float32, device=latent.device)
+            return torch.tensor([[0.0, 0.0, 0.0, 0.0, 1.0, 0.0]], dtype=torch.float32, device=latent.device)
 
     monkeypatch.setattr(strategy.ppo_actor, "get_distribution", lambda _latent, _mask: _InvalidCandidateDistribution())
     strategy.hierarchy_q_network = _FallbackQ()
@@ -1935,7 +2006,9 @@ def test_ppo_dqn_metadata_contract(
     assert row["dqn_role"] == "high_level_action_selector"
     counts = [int(row[f"hierarchy_action_{index}_count"]) for index in range(PPO_DQN_HIERARCHY_ACTION_DIM)]
     assert sum(counts) == len(result.baseline_daily_diagnostics)
-    assert json.loads(row["hierarchy_action_distribution"]) == {str(index): counts[index] for index in range(5)}
+    assert json.loads(row["hierarchy_action_distribution"]) == {
+        str(index): counts[index] for index in range(PPO_DQN_HIERARCHY_ACTION_DIM)
+    }
     aggregate_diagnostics = pd.concat(
         [result.baseline_daily_diagnostics, result.baseline_daily_diagnostics],
         ignore_index=True,

@@ -95,6 +95,42 @@ def test_ppo_baseline_action_contract():
     assert cnn_action.target_weights[1] == 0.0
     assert cnn_action.target_weights[4] == 0.0
 
+
+def test_ppo_proxy_holds_when_turnover_below_threshold():
+    from src.baselines.cnn_ppo_baseline import CNNPPOBaselineStrategy
+    from src.baselines.ppo_baseline import PPOBaselineStrategy
+
+    n_assets = 4
+    n_features = 3
+    window_size = 5
+    config = {
+        "n_assets": n_assets,
+        "n_features": n_features,
+        "window_size": window_size,
+        "latent_dim": 8,
+        "encoder": {"type": "mlp"},
+        "ppo_baseline": {"rebalance_turnover_threshold": 0.05},
+        "cnn_ppo_baseline": {"rebalance_turnover_threshold": 0.05},
+    }
+    for strategy in (
+        PPOBaselineStrategy(config),
+        CNNPPOBaselineStrategy({**config, "encoder": {"type": "cnn", "cnn_channels": [4]}}),
+    ):
+        with torch.no_grad():
+            for parameter in strategy.model.actor.parameters():
+                parameter.zero_()
+
+        action = strategy.compute_target_weights(
+            _mock_decision_market_state(n_assets, n_features, window_size),
+            _mock_portfolio_state(n_assets),
+        )
+
+        assert action.rebalance_action == 0
+        assert action.rebalance_intensity == 0.0
+        assert action.action_info["estimated_turnover"] == pytest.approx(0.0)
+        assert action.action_info["forced_hold_reason"] == "below_rebalance_turnover_threshold"
+
+
 def test_gated_and_dqn_only_baseline_contract():
     from src.baselines.bernoulli_gated_ppo import BernoulliGatedPPOStrategy
     from src.baselines.dqn_only import DQNOnlyStrategy
@@ -139,6 +175,15 @@ def test_gated_and_dqn_only_baseline_contract():
     assert action.action_info["target_source"] == "template"
     assert action.action_info["q_values"].shape == (2,)
     assert "execution" not in " ".join(action.action_info["gate_input_fields"])
+
+    hold_only_strategy = DQNOnlyStrategy({**config, "dqn_only": {"templates": ["hold"]}})
+    hold_action = hold_only_strategy.compute_target_weights(
+        _mock_decision_market_state(n_assets, n_features, window_size),
+        _mock_portfolio_state(n_assets),
+    )
+    assert hold_action.action_info["template_chosen"] == "hold"
+    assert hold_action.rebalance_action == 0
+    assert hold_action.rebalance_intensity == 0.0
 
     equal_weight_strategy = DQNOnlyStrategy({**config, "dqn_only": {"templates": ["equal_weight"]}})
     equal_weight_state = _mock_decision_market_state(n_assets, n_features, window_size)

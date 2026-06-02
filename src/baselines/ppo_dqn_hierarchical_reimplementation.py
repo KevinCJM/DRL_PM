@@ -12,6 +12,7 @@ import torch.nn.functional as F
 
 from src.agents.dqn_agent import DQNAgent, DQNAgentConfig
 from src.baselines.base_strategy import BaseStrategy
+from src.baselines.eiie import _continuous_weight_rebalance_decision
 from src.buffers.replay_buffer import ReplayItem
 from src.data.leakage_checks import assert_decision_visibility_contract
 from src.data.loader import DataContractError
@@ -27,13 +28,15 @@ from src.utils.checkpoint import CHECKPOINT_SCHEMA_VERSION, load_checkpoint, sav
 
 PPO_DQN_HIERARCHICAL_REIMPLEMENTATION = "ppo_dqn_hierarchical_reimplementation"
 PPO_DQN_HIGH_LEVEL_ACTION_SELECTOR = "high_level_action_selector"
-PPO_DQN_HIERARCHY_ACTION_DIM = 5
+PPO_DQN_HIERARCHY_HOLD_ACTION = 5
+PPO_DQN_HIERARCHY_ACTION_DIM = 6
 PPO_DQN_HIERARCHY_ACTION_NAMES = {
     0: "use_ppo_candidate",
     1: "blend_current_ppo_25",
     2: "blend_current_ppo_50",
     3: "blend_current_ppo_75",
     4: "fallback_equal_weight",
+    PPO_DQN_HIERARCHY_HOLD_ACTION: "hold",
 }
 PPO_DQN_HIERARCHY_BLEND_RHOS = {1: 0.25, 2: 0.50, 3: 0.75}
 
@@ -478,7 +481,7 @@ class PPODQNHierarchicalReimplementationStrategy(BaseStrategy):
     ) -> dict[str, Any]:
         action = int(hierarchy_action)
         if action not in PPO_DQN_HIERARCHY_ACTION_NAMES:
-            raise ValueError("ERR_PPO_DQN_HIERARCHY_ACTION_INVALID: hierarchy_action must be 0..4")
+            raise ValueError("ERR_PPO_DQN_HIERARCHY_ACTION_INVALID: hierarchy_action must be 0..5")
 
         candidate = self._mask_normalize_weights(candidate_weights, available_mask_at_decision)
         current = self._mask_normalize_weights(current_weights, available_mask_at_decision)
@@ -499,7 +502,7 @@ class PPODQNHierarchicalReimplementationStrategy(BaseStrategy):
                     "reason": "no_available_asset",
                 },
             }
-        if action != 4 and not bool(candidate["valid"]):
+        if action not in {4, PPO_DQN_HIERARCHY_HOLD_ACTION} and not bool(candidate["valid"]):
             return {
                 "status": "failed_no_valid_action",
                 "reason": "invalid_candidate_weights",
@@ -517,6 +520,20 @@ class PPODQNHierarchicalReimplementationStrategy(BaseStrategy):
             }
         if action in PPO_DQN_HIERARCHY_BLEND_RHOS and not bool(current["valid"]):
             raise ValueError("ERR_PPO_DQN_CURRENT_WEIGHTS_INVALID")
+        if action == PPO_DQN_HIERARCHY_HOLD_ACTION and not bool(current["valid"]):
+            target_weights = _equal_available_weights(available_mask)
+            action_info = {
+                "hierarchy_action": action,
+                "hierarchy_action_name": PPO_DQN_HIERARCHY_ACTION_NAMES[action],
+                "candidate_weights_valid": bool(candidate["valid"]),
+                "candidate_invalid_reason": candidate["reason"],
+                "ppo_actor_update_mask": 0,
+                "ppo_attribution_weight": 0.0,
+                "platform_adapted_surrogate": False,
+                "model_chosen_hold": True,
+                "fallback_reason": "hold_without_current_equal_weight",
+            }
+            return {"target_weights": target_weights, "action_info": action_info}
 
         if action == 0:
             target_weights = np.asarray(candidate["weights"], dtype=np.float32)
@@ -525,6 +542,11 @@ class PPODQNHierarchicalReimplementationStrategy(BaseStrategy):
             platform_adapted_surrogate = False
         elif action == 4:
             target_weights = _equal_available_weights(available_mask)
+            ppo_actor_update_mask = 0
+            ppo_attribution_weight = 0.0
+            platform_adapted_surrogate = False
+        elif action == PPO_DQN_HIERARCHY_HOLD_ACTION:
+            target_weights = np.asarray(current["weights"], dtype=np.float32)
             ppo_actor_update_mask = 0
             ppo_attribution_weight = 0.0
             platform_adapted_surrogate = False
@@ -545,7 +567,10 @@ class PPODQNHierarchicalReimplementationStrategy(BaseStrategy):
             "ppo_actor_update_mask": int(ppo_actor_update_mask),
             "ppo_attribution_weight": float(ppo_attribution_weight),
             "platform_adapted_surrogate": bool(platform_adapted_surrogate),
+            "model_chosen_hold": bool(action == PPO_DQN_HIERARCHY_HOLD_ACTION),
         }
+        if action == PPO_DQN_HIERARCHY_HOLD_ACTION:
+            action_info["forced_hold_reason"] = "model_chosen_hold"
         if action == 4 and not bool(candidate["valid"]):
             action_info["fallback_reason"] = "invalid_candidate_weights_equal_weight"
         return {"target_weights": target_weights, "action_info": action_info}
@@ -594,15 +619,15 @@ class PPODQNHierarchicalReimplementationStrategy(BaseStrategy):
                     "estimated_cost": 0.0,
                 }
             )
-            next_observation, reward, terminated, truncated, info = env.step(
-                {
-                    "weights": target_weights,
-                    "rebalance": 1,
-                    "rebalance_intensity": 1.0,
-                    **action_info,
-                }
+            env_action = _gated_hierarchy_env_action(
+                self.config,
+                self.strategy_name,
+                observation,
+                target_weights,
+                action_info,
             )
-            replay_info = {**info, **_next_replay_timing(env, terminal=bool(terminated or truncated))}
+            next_observation, reward, terminated, truncated, info = env.step(env_action)
+            replay_info = {**env_action, **info, **_next_replay_timing(env, terminal=bool(terminated or truncated))}
             ppo_update = self._update_ppo(decision, float(reward), action_info)
             ppo_losses.append(float(ppo_update["loss"]))
             self.replay_buffer.add_transition(
@@ -778,7 +803,31 @@ class PPODQNHierarchicalReimplementationStrategy(BaseStrategy):
                 "estimated_cost": 0.0,
             }
         )
-        return PortfolioAction(target_weights, 1, 1.0, action_info)
+        rebalance_decision = _continuous_weight_rebalance_decision(
+            self.config,
+            self.strategy_name,
+            portfolio_state,
+            target_weights,
+            getattr(self, "decision_context", {}),
+        )
+        merged_info = {**action_info, **rebalance_decision["action_info"]}
+        if action_info.get("model_chosen_hold") and action_info.get("fallback_reason") != "hold_without_current_equal_weight":
+            merged_info["forced_hold_reason"] = "model_chosen_hold"
+            merged_info["raw_model_requested_rebalance"] = False
+            merged_info["raw_action"] = 0
+            merged_info["raw_rho"] = 0.0
+            merged_info["raw_rebalance_intensity"] = 0.0
+            rebalance_action = 0
+            rebalance_intensity = 0.0
+        else:
+            rebalance_action = rebalance_decision["rebalance_action"]
+            rebalance_intensity = rebalance_decision["rebalance_intensity"]
+        return PortfolioAction(
+            target_weights,
+            rebalance_action,
+            rebalance_intensity,
+            merged_info,
+        )
 
     def _checkpoint_paths(self) -> dict[str, Path | None]:
         checkpoint_dir = _mapping(self.config.get("baselines")).get("checkpoint_dir")
@@ -1090,7 +1139,8 @@ def _replay_item(
         info.get("next_valuation_date_next", info.get("next_next_valuation_date", execution_date_next))
     )
     selected_q = float(q_values[int(hierarchy_action)])
-    reference_q = float(q_values[0])
+    reference_index = PPO_DQN_HIERARCHY_HOLD_ACTION if len(q_values) > PPO_DQN_HIERARCHY_HOLD_ACTION else 0
+    reference_q = float(q_values[reference_index])
     return ReplayItem(
         state_t=dict(observation),
         state_tp1=dict(next_observation),
@@ -1128,6 +1178,57 @@ def _replay_item(
             info.get("delayed_action_execution_next", info.get("delayed_action_execution", False))
         ),
         split_boundary_t=bool(terminated or truncated),
+    )
+
+
+def _gated_hierarchy_env_action(
+    config: Mapping[str, Any],
+    model_key: str,
+    observation: Mapping[str, Any],
+    target_weights: np.ndarray,
+    action_info: Mapping[str, Any],
+) -> dict[str, Any]:
+    portfolio_state = _portfolio_state_from_observation(observation)
+    rebalance_decision = _continuous_weight_rebalance_decision(
+        config,
+        model_key,
+        portfolio_state,
+        np.asarray(target_weights, dtype=float),
+        {
+            "first_trade": bool(float(portfolio_state.current_weights.sum()) <= 0.0),
+            "scheduler_allowed_rebalance": True,
+        },
+    )
+    merged_info = {**dict(action_info), **rebalance_decision["action_info"]}
+    if action_info.get("model_chosen_hold") and action_info.get("fallback_reason") != "hold_without_current_equal_weight":
+        merged_info["forced_hold_reason"] = "model_chosen_hold"
+        merged_info["raw_model_requested_rebalance"] = False
+        merged_info["raw_action"] = 0
+        merged_info["raw_rho"] = 0.0
+        merged_info["raw_rebalance_intensity"] = 0.0
+        rebalance_action = 0
+        rebalance_intensity = 0.0
+    else:
+        rebalance_action = rebalance_decision["rebalance_action"]
+        rebalance_intensity = rebalance_decision["rebalance_intensity"]
+    return {
+        "weights": np.asarray(target_weights, dtype=np.float32),
+        "rebalance": rebalance_action,
+        "rebalance_action": rebalance_action,
+        "rebalance_intensity": rebalance_intensity,
+        **merged_info,
+    }
+
+
+def _portfolio_state_from_observation(observation: Mapping[str, Any]) -> PortfolioState:
+    current_weights = np.asarray(observation.get("current_weights"), dtype=float)
+    portfolio_value = float(np.asarray(observation.get("portfolio_value", 0.0), dtype=float))
+    return PortfolioState(
+        date=pd.Timestamp("1970-01-01"),
+        nav=1.0,
+        portfolio_value=portfolio_value,
+        current_weights=current_weights,
+        step_index=0 if float(current_weights.sum()) <= 0.0 else 1,
     )
 
 
@@ -1292,6 +1393,7 @@ def _max_grad_norm(config: Mapping[str, Any]) -> float | None:
 __all__ = [
     "HierarchyQNetwork",
     "PPO_DQN_HIERARCHY_ACTION_DIM",
+    "PPO_DQN_HIERARCHY_HOLD_ACTION",
     "PPO_DQN_HIERARCHY_ACTION_NAMES",
     "PPO_DQN_HIERARCHICAL_REIMPLEMENTATION",
     "PPODQNHierarchicalReimplementationStrategy",

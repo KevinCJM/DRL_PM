@@ -1957,7 +1957,7 @@ RELATED_WORK_REIMPLEMENTATION_MODEL_NAMES = {
 }
 PPO_DQN_HIERARCHICAL_REIMPLEMENTATION = "ppo_dqn_hierarchical_reimplementation"
 PPO_DQN_HIGH_LEVEL_ACTION_SELECTOR = "high_level_action_selector"
-PPO_DQN_HIERARCHY_ACTIONS = (0, 1, 2, 3, 4)
+PPO_DQN_HIERARCHY_ACTIONS = (0, 1, 2, 3, 4, 5)
 HYBRID_DQN_OPTIMIZER_TRAINING_ALGORITHM = "factorized_dqn_signal_plus_portfolio_optimizer"
 HYBRID_DQN_OPTIMIZER_CHILD_MODEL_NAMES = (
     "hybrid_dqn_optimizer_equal_weight",
@@ -2069,6 +2069,7 @@ def _training_summary_by_model(training_summary_rows: Any | None) -> dict[str, d
         "hierarchy_action_2_count",
         "hierarchy_action_3_count",
         "hierarchy_action_4_count",
+        "hierarchy_action_5_count",
         "optimizer_name",
         "factorized_q",
         "portfolio_level_reward_shared",
@@ -2134,6 +2135,7 @@ def _baseline_metadata(model_name: str) -> dict[str, Any]:
             "hierarchy_action_2_count": 0,
             "hierarchy_action_3_count": 0,
             "hierarchy_action_4_count": 0,
+            "hierarchy_action_5_count": 0,
             "rankable_in_unified_table": True,
         }
     if model_name in HYBRID_DQN_OPTIMIZER_CHILD_MODEL_NAMES:

@@ -14,6 +14,7 @@ import torch.nn.functional as F
 
 from src.agents.dqn_agent import DQNAgentConfig
 from src.baselines.base_strategy import BaseStrategy
+from src.baselines.eiie import _continuous_weight_rebalance_decision
 from src.baselines.risk_parity import _optimize_risk_parity
 from src.data.loader import DataContractError
 from src.data.leakage_checks import assert_decision_visibility_contract
@@ -766,14 +767,16 @@ class HybridDQNOptimizerReimplementationStrategy(BaseStrategy):
                 }
             action_info = dict(decision["action_info"])
             target_weights = np.asarray(optimizer_result["target_weights"], dtype=np.float32)
-            next_observation, reward, terminated, truncated, _ = env.step(
+            env_action = self._gated_env_action(
+                observation,
+                target_weights,
                 {
-                    "weights": target_weights,
-                    "rebalance": 1,
-                    "rebalance_intensity": 1.0,
                     **action_info,
-                }
+                    "estimated_turnover": _turnover(target_weights, observation["current_weights"]),
+                    "estimated_cost": 0.0,
+                },
             )
+            next_observation, reward, terminated, truncated, _ = env.step(env_action)
             if max_gradient_updates is None or gradient_updates < int(max_gradient_updates):
                 losses.append(float(self._update_signal(observation, decision, float(reward))["loss"]))
                 gradient_updates += 1
@@ -880,9 +883,51 @@ class HybridDQNOptimizerReimplementationStrategy(BaseStrategy):
             )
         return PortfolioAction(
             np.asarray(optimizer_result["target_weights"], dtype=np.float32),
-            1,
-            1.0,
-            dict(decision["action_info"]),
+            *self._rebalance_action_tuple(
+                portfolio_state,
+                np.asarray(optimizer_result["target_weights"], dtype=np.float32),
+                decision["action_info"],
+            ),
+        )
+
+    def _gated_env_action(
+        self,
+        observation: Mapping[str, Any],
+        target_weights: np.ndarray,
+        action_info: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        portfolio_state = _portfolio_state_from_observation(observation)
+        rebalance_action, rebalance_intensity, merged_info = self._rebalance_action_tuple(
+            portfolio_state,
+            target_weights,
+            action_info,
+        )
+        return {
+            "weights": np.asarray(target_weights, dtype=np.float32),
+            "rebalance": rebalance_action,
+            "rebalance_action": rebalance_action,
+            "rebalance_intensity": rebalance_intensity,
+            **merged_info,
+        }
+
+    def _rebalance_action_tuple(
+        self,
+        portfolio_state: PortfolioState,
+        target_weights: np.ndarray,
+        action_info: Mapping[str, Any],
+    ) -> tuple[int, float, dict[str, Any]]:
+        rebalance_decision = _continuous_weight_rebalance_decision(
+            self.config,
+            self.strategy_name,
+            portfolio_state,
+            np.asarray(target_weights, dtype=float),
+            getattr(self, "decision_context", {}),
+        )
+        merged_info = {**dict(action_info), **rebalance_decision["action_info"]}
+        return (
+            int(rebalance_decision["rebalance_action"]),
+            float(rebalance_decision["rebalance_intensity"]),
+            merged_info,
         )
 
     def _checkpoint_paths(self) -> dict[str, Path | None]:
@@ -1382,6 +1427,18 @@ def _path_string(path: Path | None) -> str | None:
 
 def _turnover(weights: Any, current_weights: Any) -> float:
     return float(0.5 * np.sum(np.abs(np.asarray(weights, dtype=np.float32) - np.asarray(current_weights, dtype=np.float32))))
+
+
+def _portfolio_state_from_observation(observation: Mapping[str, Any]) -> PortfolioState:
+    current_weights = np.asarray(observation.get("current_weights"), dtype=float)
+    portfolio_value = float(np.asarray(observation.get("portfolio_value", 0.0), dtype=float))
+    return PortfolioState(
+        date=pd.Timestamp("1970-01-01"),
+        nav=1.0,
+        portfolio_value=portfolio_value,
+        current_weights=current_weights,
+        step_index=0 if float(current_weights.sum()) <= 0.0 else 1,
+    )
 
 
 def _hybrid_validation_metric_from_backtest(

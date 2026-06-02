@@ -111,7 +111,7 @@ class DQNOnlyStrategy(BaseStrategy):
             PortfolioAction(
                 target_weights=target_weights,
                 rebalance_action=rebalance_action,
-                rebalance_intensity=1.0,
+                rebalance_intensity=1.0 if rebalance_action else 0.0,
                 action_info={
                     "strategy": "dqn_only",
                     "template_chosen": template,

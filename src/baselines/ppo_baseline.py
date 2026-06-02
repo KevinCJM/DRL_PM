@@ -85,20 +85,21 @@ class PPOBaselineModel(nn.Module):
         dist = self.actor.get_distribution(latent, available_mask)
         candidate_weights = dist.mean if deterministic else dist.sample()
         log_prob = dist.log_prob(candidate_weights)
-        batch_size = market_image.shape[0]
+        estimated_turnover = (
+            estimated_turnover
+            if estimated_turnover is not None
+            else 0.5 * torch.sum(torch.abs(candidate_weights - current_weights), dim=1, keepdim=True)
+        )
+        gate_action = (estimated_turnover > _proxy_rebalance_turnover_threshold_tensor(self.config, market_image)).long().view(-1)
         return {
             "candidate_weights": candidate_weights,
             "log_prob": log_prob,
-            "gate_action": torch.ones(batch_size, device=market_image.device, dtype=torch.long),
-            "estimated_turnover": (
-                estimated_turnover
-                if estimated_turnover is not None
-                else torch.zeros(batch_size, 1, device=market_image.device, dtype=market_image.dtype)
-            ),
+            "gate_action": gate_action,
+            "estimated_turnover": estimated_turnover,
             "estimated_cost": (
                 estimated_cost
                 if estimated_cost is not None
-                else torch.zeros(batch_size, 1, device=market_image.device, dtype=market_image.dtype)
+                else torch.zeros(market_image.shape[0], 1, device=market_image.device, dtype=market_image.dtype)
             ),
             "latent": latent,
         }
@@ -136,7 +137,7 @@ class PPOBaselineStrategy(BaseStrategy):
         portfolio_state: PortfolioState,
     ) -> PortfolioAction:
         state = self.validate_decision_market_state(decision_market_state)
-        self.validate_portfolio_state(portfolio_state)
+        portfolio = self.validate_portfolio_state(portfolio_state)
 
         market_image = torch.as_tensor(state.market_image, dtype=torch.float32, device=self.device).unsqueeze(0)
         available_mask = torch.as_tensor(
@@ -162,18 +163,28 @@ class PPOBaselineStrategy(BaseStrategy):
         )
         target_weights = _enforce_masked_simplex(target_weights, state.available_mask_at_decision)
         log_prob = float(outputs["log_prob"].squeeze(0).detach().cpu().item())
+        from .eiie import _continuous_weight_rebalance_decision
+
+        rebalance_decision = _continuous_weight_rebalance_decision(
+            self.config,
+            self.strategy_name,
+            portfolio,
+            target_weights,
+            getattr(self, "decision_context", {}),
+        )
 
         return self.validate_portfolio_action(
             PortfolioAction(
                 target_weights=target_weights,
-                rebalance_action=1,
-                rebalance_intensity=1.0,
+                rebalance_action=rebalance_decision["rebalance_action"],
+                rebalance_intensity=rebalance_decision["rebalance_intensity"],
                 action_info={
                     "strategy": self.strategy_name,
                     "log_prob": log_prob,
                     "scheduler_controlled": True,
                     "constraint_controlled": True,
                     "prior_blend_weight": self.prior_blend_weight,
+                    **rebalance_decision["action_info"],
                 },
             )
         )
@@ -335,6 +346,42 @@ def _resolve_device(value: Any) -> torch.device:
     if mode == "auto":
         mode = "cpu"
     return torch.device(mode)
+
+
+def _proxy_rebalance_turnover_threshold_tensor(config: Mapping[str, Any], reference: torch.Tensor) -> torch.Tensor:
+    return torch.as_tensor(
+        _proxy_rebalance_turnover_threshold(config),
+        dtype=reference.dtype,
+        device=reference.device,
+    )
+
+
+def _proxy_rebalance_turnover_threshold(config: Mapping[str, Any]) -> float:
+    for section_name in ("ppo_baseline", "cnn_ppo_baseline", "ppo_proxy", "cnn_ppo_proxy"):
+        section = _mapping(config.get(section_name))
+        for key in ("rebalance_turnover_threshold", "turnover_gate_threshold", "min_rebalance_turnover"):
+            if section.get(key) is not None:
+                return _non_negative_float(section[key])
+    activity = _mapping(config.get("execution_activity"))
+    for key in ("model_rebalance_turnover_threshold", "rebalance_turnover_threshold", "turnover_gate_threshold"):
+        if activity.get(key) is not None:
+            return _non_negative_float(activity[key])
+    if str(activity.get("protocol", "")) == "daily_gate_with_cost_constraint":
+        if activity.get("max_average_turnover") is not None:
+            return _non_negative_float(activity["max_average_turnover"])
+        if activity.get("min_non_initial_turnover_per_opportunity") is not None:
+            return _non_negative_float(activity["min_non_initial_turnover_per_opportunity"])
+    rebalance = _mapping(config.get("rebalance"))
+    if str(rebalance.get("mode", "")) == "threshold_turnover":
+        return _non_negative_float(rebalance.get("threshold_turnover", 0.0))
+    return 0.0
+
+
+def _non_negative_float(value: Any) -> float:
+    result = float(value)
+    if not np.isfinite(result) or result < 0.0:
+        raise ValueError("ERR_PPO_BASELINE_REBALANCE_THRESHOLD_INVALID")
+    return result
 
 
 def _train_ppo_baseline_model(
