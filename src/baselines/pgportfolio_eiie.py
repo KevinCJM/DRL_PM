@@ -32,12 +32,16 @@ class PGPortfolioEIIEStrategy(NativeEIIEStrategy):
         self.pvm_update_trace: list[dict[str, Any]] = []
         self._osbl_epoch = 0
         self._osbl_epoch_stats: list[dict[str, Any]] = []
+        self._pvm: np.ndarray | None = None
+        self._pvm_dates: tuple[pd.Timestamp, ...] = ()
 
     def fit(self, train_data: Any | None = None, validation_data: Any | None = None) -> PGPortfolioEIIEStrategy:
         self.osbl_sampled_dates = []
         self.pvm_update_trace = []
         self._osbl_epoch = 0
         self._osbl_epoch_stats = []
+        self._pvm = None
+        self._pvm_dates = ()
         super().fit(train_data, validation_data)
         self._mark_pgportfolio_result()
         return self
@@ -82,12 +86,21 @@ class PGPortfolioEIIEStrategy(NativeEIIEStrategy):
         cfg = _pgportfolio_config(self.config)
         batch_size = max(1, int(cfg.get("osbl_batch_size", cfg.get("batch_size", min(16, len(samples))))))
         batches_per_epoch = max(1, int(cfg.get("osbl_batches_per_epoch", cfg.get("batches_per_epoch", 1))))
+        sample_bias = float(cfg.get("buffer_biased", cfg.get("sample_bias", 5.0e-5)))
+        is_permed = bool(cfg.get("osbl_permuted", cfg.get("is_permed", True)))
         turnover_penalty = float(cfg.get("turnover_penalty", _mapping(self.config.get("eiie_native")).get("turnover_penalty", 0.0)))
         eps = float(cfg.get("log_growth_eps", _mapping(self.config.get("eiie_native")).get("log_growth_eps", 1.0e-6)))
         seed = int(cfg.get("seed", _mapping(self.config.get("reproducibility")).get("seed", 0)))
         rng = np.random.default_rng(seed + int(self._osbl_epoch))
-        index_batches = osbl_sample_indices(len(samples), batch_size, batches_per_epoch, rng)
-        pvm = _initial_pvm(samples)
+        index_batches = osbl_sample_indices(
+            len(samples),
+            batch_size,
+            batches_per_epoch,
+            rng,
+            sample_bias=sample_bias,
+            is_permed=is_permed,
+        )
+        pvm = self._pvm_for_samples(samples)
 
         self.evaluator.train()
         losses: list[float] = []
@@ -98,7 +111,7 @@ class PGPortfolioEIIEStrategy(NativeEIIEStrategy):
             optimizer.zero_grad(set_to_none=True)
             loss_terms: list[torch.Tensor] = []
             reward_terms: list[torch.Tensor] = []
-            pvm_updates: list[tuple[int, np.ndarray, np.ndarray, pd.Timestamp]] = []
+            pvm_updates: list[tuple[int, np.ndarray, pd.Timestamp]] = []
             for index in indices:
                 sample = samples[int(index)]
                 mask_np = np.asarray(sample["mask"], dtype=bool)
@@ -126,7 +139,6 @@ class PGPortfolioEIIEStrategy(NativeEIIEStrategy):
                     (
                         int(index),
                         weights.detach().cpu().numpy().astype(np.float32, copy=True),
-                        np.asarray(sample["holding_returns"], dtype=np.float32),
                         pd.Timestamp(sample["date"]),
                     )
                 )
@@ -165,6 +177,7 @@ class PGPortfolioEIIEStrategy(NativeEIIEStrategy):
             history["online_stochastic_batch_learning"] = True
             history["clean_room_reimplementation"] = True
             history["source_code_vendored"] = False
+            history["platform_adapted_surrogate"] = True
             stats = self._osbl_epoch_stats
             if stats and len(stats) == len(history):
                 history["osbl_sample_count"] = [int(row.get("osbl_sample_count", 0)) for row in stats]
@@ -188,6 +201,7 @@ class PGPortfolioEIIEStrategy(NativeEIIEStrategy):
                     "online_stochastic_batch_learning": True,
                     "clean_room_reimplementation": True,
                     "source_code_vendored": False,
+                    "platform_adapted_surrogate": True,
                     "training_history": self.training_history,
                 }
             )
@@ -199,55 +213,90 @@ class PGPortfolioEIIEStrategy(NativeEIIEStrategy):
                     sum(int(row.get("osbl_batch_count", 0)) for row in self._osbl_epoch_stats)
                 )
 
+    def _pvm_for_samples(self, samples: list[dict[str, Any]]) -> np.ndarray:
+        dates = tuple(pd.Timestamp(sample["date"]) for sample in samples)
+        if self._pvm is None or self._pvm.shape[0] != len(samples) or self._pvm_dates != dates:
+            self._pvm = _initial_pvm(samples)
+            self._pvm_dates = dates
+        return self._pvm
+
 
 def osbl_sample_indices(
     n_samples: int,
     batch_size: int,
     n_batches: int,
     rng: np.random.Generator,
+    *,
+    sample_bias: float = 5.0e-5,
+    is_permed: bool = True,
 ) -> list[np.ndarray]:
     if int(n_samples) <= 0 or int(batch_size) <= 0 or int(n_batches) <= 0:
         return []
-    return [
-        rng.integers(0, int(n_samples), size=int(batch_size), endpoint=False, dtype=np.int64)
-        for _ in range(int(n_batches))
-    ]
+    n_samples = int(n_samples)
+    batch_size = int(batch_size)
+    n_batches = int(n_batches)
+    batches: list[np.ndarray] = []
+    for _ in range(n_batches):
+        if is_permed:
+            batches.append(
+                np.asarray(
+                    [_geometric_recent_index(0, n_samples, sample_bias, rng) for _ in range(batch_size)],
+                    dtype=np.int64,
+                )
+            )
+        else:
+            start_end = max(1, n_samples - batch_size + 1)
+            start = _geometric_recent_index(0, start_end, sample_bias, rng)
+            batches.append(np.arange(start, min(start + batch_size, n_samples), dtype=np.int64))
+    return batches
 
 
 def _initial_pvm(samples: list[dict[str, Any]]) -> np.ndarray:
     pvm = np.zeros((len(samples), len(samples[0]["mask"])), dtype=np.float32)
-    previous = _initial_weights(np.asarray(samples[0]["mask"], dtype=bool))
     for index, sample in enumerate(samples):
         mask = np.asarray(sample["mask"], dtype=bool)
-        previous = _normalize_previous(previous, mask)
-        pvm[index] = previous
-        previous = _drift_weights(previous, np.asarray(sample["holding_returns"], dtype=np.float32))
+        pvm[index] = _initial_weights(mask)
     return pvm
 
 
 def _apply_pvm_updates(
     samples: list[dict[str, Any]],
     pvm: np.ndarray,
-    updates: list[tuple[int, np.ndarray, np.ndarray, pd.Timestamp]],
+    updates: list[tuple[int, np.ndarray, pd.Timestamp]],
     trace: list[dict[str, Any]],
 ) -> None:
-    for index, weights, future_returns, date in updates:
-        next_index = int(index) + 1
-        drifted = _drift_weights(weights, future_returns)
-        if next_index < len(samples):
-            next_mask = np.asarray(samples[next_index]["mask"], dtype=bool)
-            pvm[next_index] = _normalize_previous(drifted, next_mask)
-            next_date = pd.Timestamp(samples[next_index]["date"])
-        else:
-            next_date = pd.NaT
+    for index, weights, date in updates:
+        mask = np.asarray(samples[int(index)]["mask"], dtype=bool)
+        pvm[int(index)] = _normalize_previous(weights, mask)
         trace.append(
             {
                 "date": pd.Timestamp(date),
-                "next_date": next_date,
                 "sample_index": int(index),
-                "updated_next_state": bool(next_index < len(samples)),
+                "updated_sample_state": True,
             }
         )
+
+
+def _geometric_recent_index(
+    start: int,
+    end_exclusive: int,
+    sample_bias: float,
+    rng: np.random.Generator,
+) -> int:
+    start = int(start)
+    end_exclusive = int(end_exclusive)
+    width = max(1, end_exclusive - start)
+    bias = float(sample_bias)
+    if not np.isfinite(bias) or bias <= 0.0 or bias > 1.0:
+        raise ValueError("ERR_PGPORTFOLIO_OSBL_SAMPLE_BIAS_INVALID")
+    if bias == 1.0:
+        return int(end_exclusive - 1)
+    ranks = np.arange(1, width + 1, dtype=np.float64)
+    log_prob = np.log(bias) + (ranks - 1.0) * np.log1p(-bias)
+    probabilities = np.exp(log_prob - np.max(log_prob))
+    probabilities = probabilities / probabilities.sum()
+    rank = int(rng.choice(ranks.astype(np.int64), p=probabilities))
+    return int(end_exclusive - rank)
 
 
 def _pgportfolio_config(config: Mapping[str, Any]) -> Mapping[str, Any]:

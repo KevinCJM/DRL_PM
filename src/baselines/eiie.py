@@ -81,11 +81,19 @@ class EIIEStrategy(BaseStrategy):
             self.prior_blend_weight,
         )
 
+        rebalance_decision = _continuous_weight_rebalance_decision(
+            self.config,
+            "eiie",
+            portfolio_state,
+            weights,
+            getattr(self, "decision_context", {}),
+        )
+
         return self.validate_portfolio_action(
             PortfolioAction(
                 target_weights=weights,
-                rebalance_action=1,
-                rebalance_intensity=1.0,
+                rebalance_action=rebalance_decision["rebalance_action"],
+                rebalance_intensity=rebalance_decision["rebalance_intensity"],
                 action_info={
                     "strategy": "eiie",
                     "scores": scores.cpu().numpy(),
@@ -97,6 +105,7 @@ class EIIEStrategy(BaseStrategy):
                         "available_mask_at_decision",
                         "previous_weights",
                     ),
+                    **rebalance_decision["action_info"],
                 },
             )
         )
@@ -169,7 +178,74 @@ def _eiie_asset_tensor(
 
 
 def _previous_weights(portfolio_state: PortfolioState) -> np.ndarray:
-    weights = portfolio_state.previous_executed_weights
-    if weights is None:
-        weights = portfolio_state.current_weights
-    return np.asarray(weights, dtype=float).copy()
+    return np.asarray(portfolio_state.current_weights, dtype=float).copy()
+
+
+def _continuous_weight_rebalance_decision(
+    config: Mapping[str, Any],
+    model_key: str,
+    portfolio_state: PortfolioState,
+    target_weights: np.ndarray,
+    decision_context: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    current = np.asarray(portfolio_state.current_weights, dtype=float).copy()
+    target = np.asarray(target_weights, dtype=float).copy()
+    estimated_turnover = float(0.5 * np.sum(np.abs(target - current)))
+    threshold = _rebalance_turnover_threshold(config, model_key)
+    context = _mapping(decision_context)
+    first_trade = bool(context.get("first_trade", bool(portfolio_state.step_index == 0 and current.sum() <= 0.0)))
+    scheduler_allowed = bool(context.get("scheduler_allowed_rebalance", True))
+    requested = bool(first_trade or (scheduler_allowed and estimated_turnover > threshold + 1.0e-12))
+    forced_hold_reason = None
+    if not requested:
+        forced_hold_reason = "scheduler_blocked" if not scheduler_allowed else "below_rebalance_turnover_threshold"
+    return {
+        "rebalance_action": int(requested),
+        "rebalance_intensity": 1.0 if requested else 0.0,
+        "action_info": {
+            "continuous_weight_rebalance_gate": True,
+            "estimated_turnover": estimated_turnover,
+            "candidate_turnover": estimated_turnover,
+            "candidate_turnover_estimate": estimated_turnover,
+            "rebalance_turnover_threshold": threshold,
+            "raw_model_requested_rebalance": requested,
+            "raw_action": int(requested),
+            "raw_rho": 1.0 if requested else 0.0,
+            "raw_rebalance_intensity": 1.0 if requested else 0.0,
+            "rebalance_intensity": 1.0 if requested else 0.0,
+            "scheduler_allowed_rebalance": scheduler_allowed,
+            "first_trade": first_trade,
+            "forced_hold_reason": forced_hold_reason,
+        },
+    }
+
+
+def _rebalance_turnover_threshold(config: Mapping[str, Any], model_key: str) -> float:
+    model_config = _mapping(config.get(model_key))
+    for key in ("rebalance_turnover_threshold", "turnover_gate_threshold", "min_rebalance_turnover"):
+        if model_config.get(key) is not None:
+            return _non_negative_float(model_config[key])
+    activity = _mapping(config.get("execution_activity"))
+    for key in ("model_rebalance_turnover_threshold", "rebalance_turnover_threshold", "turnover_gate_threshold"):
+        if activity.get(key) is not None:
+            return _non_negative_float(activity[key])
+    if str(activity.get("protocol", "")) == "daily_gate_with_cost_constraint":
+        if activity.get("max_average_turnover") is not None:
+            return _non_negative_float(activity["max_average_turnover"])
+        if activity.get("min_non_initial_turnover_per_opportunity") is not None:
+            return _non_negative_float(activity["min_non_initial_turnover_per_opportunity"])
+    rebalance = _mapping(config.get("rebalance"))
+    if str(rebalance.get("mode", "")) == "threshold_turnover":
+        return _non_negative_float(rebalance.get("threshold_turnover", 0.0))
+    return 0.0
+
+
+def _non_negative_float(value: Any) -> float:
+    result = float(value)
+    if not np.isfinite(result) or result < 0.0:
+        raise ValueError("ERR_EIIE_REBALANCE_THRESHOLD_INVALID")
+    return result
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}

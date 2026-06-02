@@ -369,6 +369,148 @@ def test_eiie_native_uses_pvm_previous_weights():
     assert not np.allclose(action_left.target_weights, action_right.target_weights)
 
 
+def test_eiie_previous_weights_use_current_drifted_position():
+    from src.baselines.eiie import _previous_weights
+
+    portfolio = PortfolioState(
+        date=pd.Timestamp("2024-01-01"),
+        nav=1.0,
+        portfolio_value=1e8,
+        current_weights=np.array([0.65, 0.15, 0.10, 0.10]),
+        previous_executed_weights=np.array([0.25, 0.25, 0.25, 0.25]),
+    )
+
+    np.testing.assert_allclose(_previous_weights(portfolio), portfolio.current_weights)
+
+
+def test_eiie_native_holds_when_turnover_below_threshold():
+    from src.baselines.native_eiie import NativeEIIEStrategy
+
+    n_assets = 4
+    n_features = 3
+    window_size = 5
+    strategy = NativeEIIEStrategy(
+        {
+            "n_assets": n_assets,
+            "n_features": n_features,
+            "window_size": window_size,
+            "eiie_native": {"rebalance_turnover_threshold": 0.05},
+        }
+    )
+    with torch.no_grad():
+        for parameter in strategy.evaluator.parameters():
+            parameter.zero_()
+    state = _mock_decision_market_state(n_assets, n_features, window_size)
+    portfolio = PortfolioState(
+        date=pd.Timestamp("2024-01-01"),
+        nav=1.0,
+        portfolio_value=1e8,
+        current_weights=np.ones(n_assets) / n_assets,
+        step_index=3,
+    )
+
+    action = strategy.compute_target_weights(state, portfolio)
+
+    assert action.rebalance_action == 0
+    assert action.rebalance_intensity == 0.0
+    assert action.action_info["estimated_turnover"] == pytest.approx(0.0)
+    assert action.action_info["forced_hold_reason"] == "below_rebalance_turnover_threshold"
+
+
+def test_eiie_native_rebalances_when_turnover_exceeds_threshold():
+    from src.baselines.native_eiie import NativeEIIEStrategy
+
+    n_assets = 4
+    n_features = 3
+    window_size = 5
+    strategy = NativeEIIEStrategy(
+        {
+            "n_assets": n_assets,
+            "n_features": n_features,
+            "window_size": window_size,
+            "eiie_native": {"rebalance_turnover_threshold": 0.01},
+        }
+    )
+    with torch.no_grad():
+        conv = strategy.evaluator[0]
+        linear = strategy.evaluator[-1]
+        conv.weight.zero_()
+        conv.bias.zero_()
+        conv.weight[:, n_features, :].fill_(1.0)
+        linear.weight.fill_(1.0)
+        linear.bias.zero_()
+    state = _mock_decision_market_state(n_assets, n_features, window_size)
+    portfolio = PortfolioState(
+        date=pd.Timestamp("2024-01-01"),
+        nav=1.0,
+        portfolio_value=1e8,
+        current_weights=np.array([0.70, 0.10, 0.10, 0.10]),
+        step_index=3,
+    )
+
+    action = strategy.compute_target_weights(state, portfolio)
+
+    assert action.rebalance_action == 1
+    assert action.rebalance_intensity == 1.0
+    assert action.action_info["estimated_turnover"] > 0.01
+
+
+def test_pgportfolio_pvm_updates_current_sample_only():
+    from src.baselines.pgportfolio_eiie import _apply_pvm_updates, _initial_pvm
+
+    samples = [
+        {"date": pd.Timestamp("2024-01-01"), "mask": np.array([True, True])},
+        {"date": pd.Timestamp("2024-01-02"), "mask": np.array([True, True])},
+    ]
+    pvm = _initial_pvm(samples)
+    trace = []
+
+    _apply_pvm_updates(samples, pvm, [(0, np.array([0.8, 0.2]), pd.Timestamp("2024-01-01"))], trace)
+
+    np.testing.assert_allclose(pvm[0], np.array([0.8, 0.2]))
+    np.testing.assert_allclose(pvm[1], np.array([0.5, 0.5]))
+    assert trace == [
+        {
+            "date": pd.Timestamp("2024-01-01"),
+            "sample_index": 0,
+            "updated_sample_state": True,
+        }
+    ]
+
+
+def test_pgportfolio_pvm_persists_for_same_sample_dates():
+    from src.baselines.pgportfolio_eiie import PGPortfolioEIIEStrategy
+
+    strategy = PGPortfolioEIIEStrategy({"n_assets": 2, "n_features": 1, "window_size": 2})
+    samples = [
+        {"date": pd.Timestamp("2024-01-01"), "mask": np.array([True, True])},
+        {"date": pd.Timestamp("2024-01-02"), "mask": np.array([True, True])},
+    ]
+
+    pvm = strategy._pvm_for_samples(samples)
+    pvm[0] = np.array([0.9, 0.1])
+
+    assert strategy._pvm_for_samples(samples) is pvm
+    np.testing.assert_allclose(strategy._pvm_for_samples(samples)[0], np.array([0.9, 0.1]))
+
+
+def test_pgportfolio_osbl_nonpermed_batch_is_contiguous():
+    from src.baselines.pgportfolio_eiie import osbl_sample_indices
+
+    batches = osbl_sample_indices(
+        20,
+        4,
+        2,
+        np.random.default_rng(7),
+        sample_bias=1.0,
+        is_permed=False,
+    )
+
+    assert len(batches) == 2
+    for batch in batches:
+        assert np.diff(batch).tolist() == [1, 1, 1]
+
+
 def test_dqn_template_invalid_action_mask_blocks_bootstrap_q():
     from src.baselines.native_dqn_template import MaskedTemplateDQNAgent
 

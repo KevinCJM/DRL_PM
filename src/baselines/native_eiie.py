@@ -11,7 +11,12 @@ import torch.nn as nn
 
 from src.baselines.base_strategy import BaseStrategy
 from src.baselines.deep_training import execution_aligned_return_component_frames
-from src.baselines.eiie import MASKED_SCORE_VALUE, _eiie_asset_tensor, _previous_weights
+from src.baselines.eiie import (
+    MASKED_SCORE_VALUE,
+    _continuous_weight_rebalance_decision,
+    _eiie_asset_tensor,
+    _previous_weights,
+)
 from src.data.splits import SplitSpec
 from src.envs.portfolio_rebalance_env import PortfolioRebalanceEnv
 from src.envs.state import DecisionMarketState, PortfolioAction, PortfolioState
@@ -152,11 +157,18 @@ class NativeEIIEStrategy(BaseStrategy):
             mask = torch.as_tensor(state.available_mask_at_decision, dtype=torch.bool, device=self.device)
             scores = raw_scores.masked_fill(~mask, MASKED_SCORE_VALUE)
             weights = torch.softmax(scores, dim=0).detach().cpu().numpy()
+        rebalance_decision = _continuous_weight_rebalance_decision(
+            self.config,
+            self.strategy_name,
+            portfolio,
+            weights,
+            getattr(self, "decision_context", {}),
+        )
         return self.validate_portfolio_action(
             PortfolioAction(
                 target_weights=weights,
-                rebalance_action=1,
-                rebalance_intensity=1.0,
+                rebalance_action=rebalance_decision["rebalance_action"],
+                rebalance_intensity=rebalance_decision["rebalance_intensity"],
                 action_info={
                     "strategy": self.strategy_name,
                     "scores": scores.detach().cpu().numpy(),
@@ -167,6 +179,7 @@ class NativeEIIEStrategy(BaseStrategy):
                     "platform_native_rl_training": True,
                     "portfolio_vector_memory": True,
                     "score_input_fields": ("market_image", "available_mask_at_decision", "previous_weights"),
+                    **rebalance_decision["action_info"],
                 },
             )
         )
