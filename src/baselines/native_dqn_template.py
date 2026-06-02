@@ -11,6 +11,7 @@ import torch.nn as nn
 
 from src.agents.dqn_agent import DQNAgent
 from src.baselines.base_strategy import BaseStrategy
+from src.baselines.eiie import _continuous_weight_rebalance_decision
 from src.buffers.replay_buffer import ReplayItem
 from src.data.splits import SplitSpec
 from src.envs.portfolio_rebalance_env import PortfolioRebalanceEnv
@@ -20,6 +21,7 @@ from src.models.encoders import EncoderFactory
 
 DQN_TEMPLATE_ALGORITHM = "double_dqn_template_selector"
 DQN_TEMPLATE_ACTIONS = (
+    "hold",
     "equal_weight",
     "minimum_variance",
     "maximum_sharpe",
@@ -242,16 +244,25 @@ class NativeDQNTemplateStrategy(BaseStrategy):
         q_values = _q_values_for_observation(self.agent, observation, apply_mask=False).detach().cpu().numpy()[0]
         reference_q = float(q_values[0])
         selected_q = float(q_values[int(action_index)])
+        rebalance_decision = _template_rebalance_decision(
+            self.config,
+            self.strategy_name,
+            portfolio,
+            weights,
+            int(action_index),
+            getattr(self, "decision_context", {}),
+        )
         return self.validate_portfolio_action(
             PortfolioAction(
                 target_weights=weights,
-                rebalance_action=1,
-                rebalance_intensity=1.0,
+                rebalance_action=rebalance_decision["rebalance_action"],
+                rebalance_intensity=rebalance_decision["rebalance_intensity"],
                 action_info={
                     "strategy": self.strategy_name,
                     "training_algorithm": DQN_TEMPLATE_ALGORITHM,
                     "rl_training": True,
                     "platform_native_rl_training": True,
+                    "template_chosen": DQN_TEMPLATE_ACTIONS[int(action_index)],
                     "gate_action": int(action_index),
                     "gate_action_index": int(action_index),
                     "estimated_turnover": turnover,
@@ -262,6 +273,7 @@ class NativeDQNTemplateStrategy(BaseStrategy):
                     "q_hold": reference_q,
                     "q_rebalance": selected_q,
                     "q_gap": selected_q - reference_q,
+                    **rebalance_decision["action_info"],
                 },
             )
         )
@@ -286,16 +298,9 @@ class NativeDQNTemplateStrategy(BaseStrategy):
             action_index = _epsilon_valid_action(self.agent, observation, templates.valid_mask)
             weights = templates.weights[action_index]
             turnover = _turnover(weights, observation["current_weights"])
-            action = {
-                "weights": weights,
-                "rebalance": 1,
-                "rebalance_intensity": 1.0,
-                "gate_action": int(action_index),
-                "gate_action_index": int(action_index),
-                "estimated_turnover": turnover,
-                "estimated_cost": 0.0,
-            }
+            action = _template_env_action(self.config, self.strategy_name, observation, weights, int(action_index), turnover)
             next_observation, reward, terminated, truncated, info = env.step(action)
+            transition_info = {**action, **dict(info)}
             next_templates = template_weights_from_observation(next_observation, self.config)
             state_t = dict(observation)
             state_tp1 = dict(next_observation)
@@ -310,7 +315,7 @@ class NativeDQNTemplateStrategy(BaseStrategy):
                     reward,
                     terminated,
                     truncated,
-                    info,
+                    transition_info,
                     turnover,
                     self.agent,
                 )
@@ -415,6 +420,7 @@ def template_weights_from_observation(observation: Mapping[str, Any], config: Ma
     returns = _return_window(image, len(mask))
     volatility = np.asarray(observation.get("volatility_20d_at_decision"), dtype=np.float32)
     candidates = [
+        _hold_weight(mask, observation),
         _equal_weight(mask),
         _minimum_variance(mask, returns),
         _maximum_sharpe(mask, returns),
@@ -451,16 +457,9 @@ def _evaluate_template_policy(
         action_index = _greedy_valid_action(agent, observation, templates.valid_mask)
         weights = templates.weights[action_index]
         turnover = _turnover(weights, observation["current_weights"])
+        action = _template_env_action(env.config, "dqn_template_native", observation, weights, int(action_index), turnover)
         observation, reward, terminated, truncated, _ = env.step(
-            {
-                "weights": weights,
-                "rebalance": 1,
-                "rebalance_intensity": 1.0,
-                "gate_action": int(action_index),
-                "gate_action_index": int(action_index),
-                "estimated_turnover": turnover,
-                "estimated_cost": 0.0,
-            }
+            action
         )
         rewards.append(float(reward))
     if not rewards:
@@ -587,6 +586,89 @@ def _observation_from_state(state: DecisionMarketState, portfolio: PortfolioStat
         "turnover_rate_at_decision": np.nan_to_num(np.asarray(state.turnover_rate_at_decision, dtype=np.float32)),
         "portfolio_value": np.asarray(portfolio.portfolio_value, dtype=np.float32),
     }
+
+
+def _template_env_action(
+    config: Mapping[str, Any],
+    model_key: str,
+    observation: Mapping[str, Any],
+    weights: np.ndarray,
+    action_index: int,
+    turnover: float | None = None,
+) -> dict[str, Any]:
+    portfolio = _portfolio_state_from_observation(observation)
+    rebalance_decision = _template_rebalance_decision(config, model_key, portfolio, weights, action_index, None)
+    return {
+        "weights": np.asarray(weights, dtype=np.float32),
+        "rebalance": rebalance_decision["rebalance_action"],
+        "rebalance_action": rebalance_decision["rebalance_action"],
+        "rebalance_intensity": rebalance_decision["rebalance_intensity"],
+        "template_chosen": DQN_TEMPLATE_ACTIONS[int(action_index)],
+        "gate_action": int(action_index),
+        "gate_action_index": int(action_index),
+        "estimated_turnover": float(rebalance_decision["action_info"]["estimated_turnover"] if turnover is None else turnover),
+        "estimated_cost": 0.0,
+        **rebalance_decision["action_info"],
+    }
+
+
+def _template_rebalance_decision(
+    config: Mapping[str, Any],
+    model_key: str,
+    portfolio_state: PortfolioState,
+    weights: np.ndarray,
+    action_index: int,
+    decision_context: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if int(action_index) == 0 and float(np.asarray(portfolio_state.current_weights, dtype=float).sum()) > 0.0:
+        turnover = _turnover(weights, portfolio_state.current_weights)
+        return {
+            "rebalance_action": 0,
+            "rebalance_intensity": 0.0,
+            "action_info": {
+                "continuous_weight_rebalance_gate": True,
+                "template_hold_action": True,
+                "estimated_turnover": turnover,
+                "candidate_turnover": turnover,
+                "candidate_turnover_estimate": turnover,
+                "raw_model_requested_rebalance": False,
+                "raw_action": 0,
+                "raw_rho": 0.0,
+                "raw_rebalance_intensity": 0.0,
+                "rebalance_intensity": 0.0,
+                "forced_hold_reason": "model_chosen_hold",
+            },
+        }
+    decision = _continuous_weight_rebalance_decision(
+        config,
+        model_key,
+        portfolio_state,
+        np.asarray(weights, dtype=float),
+        decision_context,
+    )
+    decision["action_info"]["template_hold_action"] = int(action_index) == 0
+    return decision
+
+
+def _portfolio_state_from_observation(observation: Mapping[str, Any]) -> PortfolioState:
+    current_weights = np.asarray(observation.get("current_weights"), dtype=float)
+    portfolio_value = float(np.asarray(observation.get("portfolio_value", 0.0), dtype=float))
+    return PortfolioState(
+        date=pd.Timestamp("1970-01-01"),
+        nav=1.0,
+        portfolio_value=portfolio_value,
+        current_weights=current_weights,
+        step_index=0 if float(current_weights.sum()) <= 0.0 else 1,
+    )
+
+
+def _hold_weight(mask: np.ndarray, observation: Mapping[str, Any]) -> np.ndarray | None:
+    current = np.asarray(observation.get("current_weights"), dtype=np.float32)
+    if current.shape != mask.shape or not np.isfinite(current).all():
+        return None
+    if float(np.maximum(current, 0.0).sum()) <= 0.0:
+        return _equal_weight(mask)
+    return np.maximum(current, 0.0)
 
 
 def _equal_weight(mask: np.ndarray) -> np.ndarray:

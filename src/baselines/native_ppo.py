@@ -10,6 +10,7 @@ import torch
 
 from src.agents.ppo_agent import PPOAgent
 from src.baselines.base_strategy import BaseStrategy
+from src.baselines.eiie import _continuous_weight_rebalance_decision
 from src.data.splits import SplitSpec
 from src.envs.portfolio_rebalance_env import PortfolioRebalanceEnv
 from src.envs.state import DecisionMarketState, PortfolioAction, PortfolioState
@@ -83,11 +84,11 @@ class NativePPOBaselineStrategy(BaseStrategy):
         gradient_updates = 0
 
         for epoch in range(epochs):
-            rollout = self.agent.collect_rollout(train_env, max_steps=max_train_steps)
+            rollout = self._collect_rollout(train_env, max_steps=max_train_steps)
             env_steps += len(rollout)
             update_stats = self.agent.update(rollout)
             gradient_updates += int(self.agent.config.update_epochs)
-            validation_metric = _evaluate_agent(self.agent, validation_env, max_steps=max_validation_steps)
+            validation_metric = _evaluate_agent(self, validation_env, max_steps=max_validation_steps)
             loss_value = update_stats.get("actor_loss", update_stats.get("value_loss", np.nan))
             row = {
                 "epoch": int(epoch),
@@ -179,18 +180,27 @@ class NativePPOBaselineStrategy(BaseStrategy):
         portfolio = self.validate_portfolio_state(portfolio_state)
         observation = _observation_from_state(state, portfolio)
         action_info = self.agent.select_action(observation, deterministic=True)
+        target_weights = np.asarray(action_info["candidate_weights"], dtype=float)
+        rebalance_decision = _continuous_weight_rebalance_decision(
+            self.config,
+            self.strategy_name,
+            portfolio,
+            target_weights,
+            getattr(self, "decision_context", {}),
+        )
         return self.validate_portfolio_action(
             PortfolioAction(
-                target_weights=np.asarray(action_info["candidate_weights"], dtype=float),
-                rebalance_action=1,
-                rebalance_intensity=1.0,
+                target_weights=target_weights,
+                rebalance_action=rebalance_decision["rebalance_action"],
+                rebalance_intensity=rebalance_decision["rebalance_intensity"],
                 action_info={
                     "strategy": self.strategy_name,
                     "training_algorithm": NATIVE_PPO_ALGORITHM,
                     "rl_training": True,
                     "platform_native_rl_training": True,
-                    "estimated_turnover": action_info.get("estimated_turnover"),
+                    "actor_estimated_turnover": action_info.get("estimated_turnover"),
                     "estimated_cost": action_info.get("estimated_cost"),
+                    **rebalance_decision["action_info"],
                 },
             )
         )
@@ -221,6 +231,83 @@ class NativePPOBaselineStrategy(BaseStrategy):
         root = Path(checkpoint_dir) / "checkpoints" / self.strategy_name
         return {"best": root / "best.pt", "last": root / "last.pt"}
 
+    def _collect_rollout(
+        self,
+        env: PortfolioRebalanceEnv,
+        max_steps: int | None = None,
+    ):
+        buffer = self.agent.rollout_buffer
+        buffer.clear()
+        observation, _ = env.reset()
+        terminated = False
+        truncated = False
+        step_count = 0
+        while not buffer.is_full and not (terminated or truncated):
+            if max_steps is not None and step_count >= int(max_steps):
+                break
+            action_info = self.agent.select_action(observation, deterministic=False)
+            action = self._gated_env_action(observation, action_info)
+            next_observation, reward, terminated, truncated, info = env.step(action)
+            gate_action = int(info.get("gate_action", action.get("gate_action", action["rebalance"])))
+            rebalance_action = int(info.get("rebalance_action", info.get("rebalance", action["rebalance"])))
+            rebalance_intensity = float(info.get("rebalance_intensity", action["rebalance_intensity"]))
+            decision_date = pd.Timestamp(info.get("decision_date", pd.Timestamp("1970-01-01") + pd.Timedelta(days=step_count)))
+            execution_date = pd.Timestamp(info.get("execution_date", decision_date))
+            next_valuation_date = pd.Timestamp(info.get("next_valuation_date", execution_date))
+            buffer.add(
+                decision_date=decision_date,
+                execution_date=execution_date,
+                next_valuation_date=next_valuation_date,
+                execution_price=str(info.get("execution_price_type", info.get("execution_price", "open"))),
+                delayed_action_execution=bool(info.get("delayed_action_execution", False)),
+                state=observation,
+                candidate_weights=action_info["candidate_weights"],
+                executed_weights=info.get("executed_weights", action["weights"]),
+                log_prob=action_info["log_prob"],
+                value=action_info["value"],
+                decision_value=action_info["value"],
+                gate_action=gate_action,
+                rebalance_action=rebalance_action,
+                rebalance_intensity=rebalance_intensity,
+                reward=float(reward),
+                terminated=bool(terminated),
+                truncated=bool(truncated),
+                auxiliary_labels=info.get("auxiliary_labels", {}),
+                preference_vector=info.get("preference_vector"),
+                uncertainty_features={},
+                distributional_features=info.get("distributional_features", {}),
+            )
+            observation = next_observation
+            step_count += 1
+        buffer.last_observation = observation
+        buffer.rollout_boundary_split = bool(buffer.is_full and not (terminated or truncated))
+        last_value = 0.0 if terminated or truncated else self.agent.value(observation)
+        buffer.compute_gae(last_value=last_value, last_terminated=bool(terminated or truncated))
+        return buffer
+
+    def _gated_env_action(self, observation: Mapping[str, Any], action_info: Mapping[str, Any]) -> dict[str, Any]:
+        target_weights = np.asarray(action_info["candidate_weights"], dtype=float)
+        portfolio = _portfolio_state_from_observation(observation)
+        rebalance_decision = _continuous_weight_rebalance_decision(
+            self.config,
+            self.strategy_name,
+            portfolio,
+            target_weights,
+            {
+                "first_trade": bool(float(portfolio.current_weights.sum()) <= 0.0),
+                "scheduler_allowed_rebalance": True,
+            },
+        )
+        gated_info = {
+            **dict(action_info),
+            "gate_action": rebalance_decision["rebalance_action"],
+            "rebalance_action": rebalance_decision["rebalance_action"],
+            "rebalance_intensity": rebalance_decision["rebalance_intensity"],
+            **rebalance_decision["action_info"],
+        }
+        gated_info["estimated_cost"] = action_info.get("estimated_cost")
+        return self.agent.action_for_env(observation, gated_info)
+
 
 class NativeCNNPPOBaselineStrategy(NativePPOBaselineStrategy):
     strategy_name = "cnn_ppo_native"
@@ -233,7 +320,7 @@ class NativeCNNPPOBaselineStrategy(NativePPOBaselineStrategy):
         return agent
 
 
-def _evaluate_agent(agent: PPOAgent, env: PortfolioRebalanceEnv, max_steps: int | None = None) -> float:
+def _evaluate_agent(strategy: NativePPOBaselineStrategy, env: PortfolioRebalanceEnv, max_steps: int | None = None) -> float:
     observation, _ = env.reset()
     terminated = False
     truncated = False
@@ -241,13 +328,25 @@ def _evaluate_agent(agent: PPOAgent, env: PortfolioRebalanceEnv, max_steps: int 
     while not (terminated or truncated):
         if max_steps is not None and len(rewards) >= int(max_steps):
             break
-        action_info = agent.select_action(observation, deterministic=True)
-        action = agent.action_for_env(observation, action_info)
+        action_info = strategy.agent.select_action(observation, deterministic=True)
+        action = strategy._gated_env_action(observation, action_info)
         observation, reward, terminated, truncated, _ = env.step(action)
         rewards.append(float(reward))
     if not rewards:
         return float("-inf")
     return float(np.sum(rewards))
+
+
+def _portfolio_state_from_observation(observation: Mapping[str, Any]) -> PortfolioState:
+    current_weights = np.asarray(observation.get("current_weights"), dtype=float)
+    portfolio_value = float(np.asarray(observation.get("portfolio_value", 0.0), dtype=float))
+    return PortfolioState(
+        date=pd.Timestamp("1970-01-01"),
+        nav=1.0,
+        portfolio_value=portfolio_value,
+        current_weights=current_weights,
+        step_index=0 if float(current_weights.sum()) <= 0.0 else 1,
+    )
 
 
 def _observation_from_state(state: DecisionMarketState, portfolio: PortfolioState) -> dict[str, Any]:

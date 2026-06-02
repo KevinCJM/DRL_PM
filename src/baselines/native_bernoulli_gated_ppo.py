@@ -197,6 +197,7 @@ class NativeBernoulliGatedPPOBaselineStrategy(BaseStrategy):
                     "platform_native_rl_training": True,
                     "gate_training": "on_policy_bernoulli",
                     "p_rebalance": action_info["p_rebalance"],
+                    "deterministic_gate_threshold": action_info["deterministic_gate_threshold"],
                     "gate_entropy": action_info["gate_entropy"],
                     "estimated_turnover": action_info["estimated_turnover"],
                     "estimated_cost": 0.0,
@@ -266,8 +267,10 @@ class NativeBernoulliGatedPPOBaselineStrategy(BaseStrategy):
         p_rebalance = self.gate(latent).view(-1, 1)
         gate_dist = Bernoulli(probs=p_rebalance)
         if deterministic:
-            gate_action = (p_rebalance >= 0.5).to(dtype=torch.float32)
+            gate_threshold = _deterministic_gate_threshold(self.config)
+            gate_action = (p_rebalance >= gate_threshold).to(dtype=torch.float32)
         else:
+            gate_threshold = 0.5
             gate_action = gate_dist.sample()
         gate_log_prob = gate_dist.log_prob(gate_action).view(-1, 1)
         gate_entropy = gate_dist.entropy().view(-1, 1)
@@ -283,6 +286,7 @@ class NativeBernoulliGatedPPOBaselineStrategy(BaseStrategy):
             "gate_log_prob": float(gate_log_prob.view(-1)[0].detach().cpu()),
             "gate_entropy": float(gate_entropy.view(-1)[0].detach().cpu()),
             "p_rebalance": float(p_rebalance.view(-1)[0].detach().cpu()),
+            "deterministic_gate_threshold": float(gate_threshold),
             "value": float(value.view(-1)[0].detach().cpu()),
             "estimated_turnover": float(turnover.view(-1)[0].detach().cpu()),
             "estimated_cost": 0.0,
@@ -583,6 +587,25 @@ def _optimizer_lr(config: Mapping[str, Any]) -> float:
         if value is not None:
             return float(value)
     return 3.0e-4
+
+
+def _deterministic_gate_threshold(config: Mapping[str, Any]) -> float:
+    model_config = _mapping(config.get("bernoulli_gated_ppo_native"))
+    for key in ("deterministic_gate_threshold", "rebalance_probability_threshold", "gate_threshold"):
+        if model_config.get(key) is not None:
+            return _unit_interval_float(key, model_config[key])
+    activity = _mapping(config.get("execution_activity"))
+    for key in ("deterministic_gate_threshold", "rebalance_probability_threshold", "gate_threshold"):
+        if activity.get(key) is not None:
+            return _unit_interval_float(key, activity[key])
+    return 0.5
+
+
+def _unit_interval_float(name: str, value: Any) -> float:
+    result = float(value)
+    if not np.isfinite(result) or result < 0.0 or result > 1.0:
+        raise ValueError(f"ERR_BERNOULLI_NATIVE_CONFIG_INVALID: {name} must be in [0,1]")
+    return result
 
 
 def _dates(value: Any) -> pd.DatetimeIndex:
