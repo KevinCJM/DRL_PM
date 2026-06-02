@@ -100,6 +100,32 @@ def test_ppo_rollout_gate_hold_sends_rebalance_zero():
     assert rollout.items[0].uncertainty_features["q_gap"] == pytest.approx(-1.0)
 
 
+def test_ppo_action_for_env_preserves_raw_gate_diagnostics():
+    agent = _agent(rollout_steps=1, minibatch_size=1, update_epochs=1)
+
+    action = agent.action_for_env(
+        _state(0),
+        {
+            "candidate_weights": np.array([0.8, 0.2], dtype=np.float32),
+            "gate_action": 0,
+            "rebalance_intensity": 0.0,
+            "raw_rebalance_intensity": 0.42,
+            "raw_rho": 0.42,
+            "raw_model_requested_rebalance": True,
+            "raw_action": 1,
+            "candidate_turnover": 0.3,
+            "forced_hold_reason": "below_rebalance_turnover_threshold",
+        },
+    )
+
+    assert action["rebalance"] == 0
+    assert action["raw_rebalance_intensity"] == pytest.approx(0.42)
+    assert action["raw_model_requested_rebalance"] is True
+    assert action["raw_action"] == 1
+    assert action["candidate_turnover"] == pytest.approx(0.3)
+    assert action["forced_hold_reason"] == "below_rebalance_turnover_threshold"
+
+
 def test_rollout_features_accepts_uncertainty_vector_payloads():
     features = _rollout_features(
         {

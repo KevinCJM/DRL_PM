@@ -259,6 +259,20 @@ class PPOAgent:
             "q_gap",
             "estimated_turnover",
             "estimated_cost",
+            "candidate_turnover",
+            "candidate_turnover_estimate",
+            "candidate_cost_estimate",
+            "rho",
+            "raw_rho",
+            "raw_rebalance_intensity",
+            "raw_model_requested_rebalance",
+            "raw_action",
+            "final_rho",
+            "final_rebalance_intensity",
+            "final_action",
+            "forced_hold_reason",
+            "rebalance_values",
+            "continuous_weight_rebalance_gate",
         ):
             if key in action_info and action_info[key] is not None:
                 action[key] = action_info[key]

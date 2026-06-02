@@ -28,7 +28,7 @@ def test_cage_outputs_candidate_weights_and_rho_without_premixing():
     assert not np.allclose(action.target_weights, np.array([0.4, 0.6]))
 
 
-def test_scheduler_blocked_day_forces_cage_hold_but_keeps_candidate_diagnostics():
+def test_scheduler_blocked_day_keeps_cage_raw_intent_for_engine_diagnostics():
     strategy = CageEIIEFixedRho50Strategy(_strategy_config())
     strategy._candidate_weights = lambda _state, _portfolio: np.array([0.2, 0.8])
     strategy.set_decision_context(scheduler_allowed_rebalance=False, scheduler_pre_allowed=False, first_trade=False)
@@ -36,21 +36,24 @@ def test_scheduler_blocked_day_forces_cage_hold_but_keeps_candidate_diagnostics(
     action = strategy.compute_target_weights(_decision_state(), _portfolio_state())
 
     np.testing.assert_allclose(action.target_weights, np.array([0.2, 0.8]))
-    assert action.rebalance_action == 0
-    assert action.rebalance_intensity == 0.0
-    assert action.action_info["forced_hold_reason"] == "scheduler_blocked"
+    assert action.rebalance_action == 1
+    assert action.rebalance_intensity == 0.5
+    assert action.action_info["raw_rho"] == 0.5
+    assert action.action_info["raw_model_requested_rebalance"] is True
+    assert action.action_info["forced_hold_reason"] is None
 
 
 def test_cage_no_cvar_variant_ignores_configured_cvar_penalty():
     strategy = CageEIIENoCvarStrategy(_strategy_config())
     strategy.config["cage_eiie"]["lambda_cvar"] = 999.0
 
-    rho, _scores, _reason = strategy._rho_action(
+    rho, _scores, _components, _reason = strategy._rho_action(
         scheduler_allowed=True,
         first_trade=False,
         estimated_turnover=0.0,
         estimated_cost=0.0,
         expected_return=0.01,
+        expected_alpha_horizon=0.01,
         cvar_loss_5=1.0,
         drawdown=0.0,
     )
@@ -58,16 +61,28 @@ def test_cage_no_cvar_variant_ignores_configured_cvar_penalty():
     assert rho == 1.0
 
 
-def test_gt_rcpo_lite_uses_decision_visible_graph_features_and_scheduler_mask():
-    strategy = GTRCPOLiteStrategy(_strategy_config())
+def test_gt_rcpo_lite_keeps_raw_intent_on_scheduler_blocked_day():
+    config = _strategy_config()
+    config["gt_rcpo_lite"].update(
+        {
+            "lambda_turnover": 0.0,
+            "lambda_cost": 0.0,
+            "lambda_cvar": 0.0,
+            "lambda_dd": 0.0,
+        }
+    )
+    strategy = GTRCPOLiteStrategy(config)
     strategy.set_decision_context(scheduler_allowed_rebalance=False, scheduler_pre_allowed=False, first_trade=False)
 
     action = strategy.compute_target_weights(_decision_state(), _portfolio_state())
 
-    assert action.rebalance_action == 0
-    assert action.rebalance_intensity == 0.0
+    assert action.rebalance_action == 1
+    assert action.rebalance_intensity == 1.0
+    assert action.action_info["raw_rho"] == 1.0
+    assert action.action_info["raw_model_requested_rebalance"] is True
     assert action.action_info["graph_feature_mode"] == "decision_visible_rolling_correlation"
-    assert action.action_info["forced_hold_reason"] == "scheduler_blocked"
+    assert action.action_info["scheduler_allowed_rebalance"] is False
+    assert action.action_info["forced_hold_reason"] is None
     np.testing.assert_allclose(action.target_weights.sum(), 1.0)
 
 

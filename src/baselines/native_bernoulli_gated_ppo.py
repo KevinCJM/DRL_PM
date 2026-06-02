@@ -12,6 +12,7 @@ import torch.nn.functional as F
 from torch.distributions import Bernoulli
 
 from src.baselines.base_strategy import BaseStrategy
+from src.baselines.eiie import _rebalance_turnover_threshold
 from src.data.splits import SplitSpec
 from src.envs.portfolio_rebalance_env import PortfolioRebalanceEnv
 from src.envs.state import DecisionMarketState, PortfolioAction, PortfolioState
@@ -114,7 +115,10 @@ class NativeBernoulliGatedPPOBaselineStrategy(BaseStrategy):
                     "gate_entropy": float(stats["gate_entropy"]),
                     "gate_grad_norm": float(stats["gate_grad_norm"]),
                     "p_rebalance_mean": float(np.mean(rollout["p_rebalance"])) if rollout["p_rebalance"] else np.nan,
-                    "rebalance_frequency": float(np.mean(rollout["gate_action"])) if rollout["gate_action"] else np.nan,
+                    "raw_gate_frequency": float(np.mean(rollout["gate_action"])) if rollout["gate_action"] else np.nan,
+                    "rebalance_frequency": float(np.mean(rollout["executed_gate_action"]))
+                    if rollout["executed_gate_action"]
+                    else np.nan,
                     "max_train_steps": max_train_steps,
                     "max_validation_steps": max_validation_steps,
                     "status": "completed",
@@ -199,8 +203,20 @@ class NativeBernoulliGatedPPOBaselineStrategy(BaseStrategy):
                     "p_rebalance": action_info["p_rebalance"],
                     "deterministic_gate_threshold": action_info["deterministic_gate_threshold"],
                     "gate_entropy": action_info["gate_entropy"],
+                    "gate_action": action_info["gate_action"],
+                    "raw_bernoulli_gate_action": action_info["raw_bernoulli_gate_action"],
+                    "continuous_weight_rebalance_gate": action_info["continuous_weight_rebalance_gate"],
+                    "rebalance_turnover_threshold": action_info["rebalance_turnover_threshold"],
                     "estimated_turnover": action_info["estimated_turnover"],
+                    "candidate_turnover": action_info["candidate_turnover"],
+                    "candidate_turnover_estimate": action_info["candidate_turnover_estimate"],
                     "estimated_cost": 0.0,
+                    "raw_model_requested_rebalance": action_info["raw_model_requested_rebalance"],
+                    "raw_action": action_info["raw_action"],
+                    "raw_rho": action_info["raw_rho"],
+                    "raw_rebalance_intensity": action_info["raw_rebalance_intensity"],
+                    "rebalance_intensity": action_info["rebalance_intensity"],
+                    "forced_hold_reason": action_info["forced_hold_reason"],
                 },
             )
         )
@@ -220,6 +236,7 @@ class NativeBernoulliGatedPPOBaselineStrategy(BaseStrategy):
             "candidate_weights": [],
             "candidate_log_prob": [],
             "gate_action": [],
+            "executed_gate_action": [],
             "gate_log_prob": [],
             "gate_entropy": [],
             "p_rebalance": [],
@@ -236,7 +253,8 @@ class NativeBernoulliGatedPPOBaselineStrategy(BaseStrategy):
             rollout["state"].append(dict(observation))
             rollout["candidate_weights"].append(np.asarray(action_info["candidate_weights"], dtype=np.float32))
             rollout["candidate_log_prob"].append(float(action_info["candidate_log_prob"]))
-            rollout["gate_action"].append(int(action_info["gate_action"]))
+            rollout["gate_action"].append(int(action_info["raw_bernoulli_gate_action"]))
+            rollout["executed_gate_action"].append(int(action_info["gate_action"]))
             rollout["gate_log_prob"].append(float(action_info["gate_log_prob"]))
             rollout["gate_entropy"].append(float(action_info["gate_entropy"]))
             rollout["p_rebalance"].append(float(action_info["p_rebalance"]))
@@ -274,22 +292,42 @@ class NativeBernoulliGatedPPOBaselineStrategy(BaseStrategy):
             gate_action = gate_dist.sample()
         gate_log_prob = gate_dist.log_prob(gate_action).view(-1, 1)
         gate_entropy = gate_dist.entropy().view(-1, 1)
-        executed_weights = torch.where(gate_action > 0.0, candidate_weights, current_weights)
         turnover = 0.5 * torch.sum(torch.abs(candidate_weights - current_weights), dim=1, keepdim=True)
+        raw_gate_action = int(gate_action.view(-1)[0].detach().cpu())
+        turnover_value = float(turnover.view(-1)[0].detach().cpu())
+        threshold = _rebalance_turnover_threshold(self.config, self.strategy_name)
+        first_trade = bool(float(current_weights.sum().detach().cpu()) <= 0.0)
+        requested = bool(first_trade or (raw_gate_action and turnover_value > threshold + 1.0e-12))
+        executed_weights = candidate_weights if requested else current_weights
+        forced_hold_reason = None
+        if not requested:
+            forced_hold_reason = "model_chosen_hold" if raw_gate_action == 0 else "below_rebalance_turnover_threshold"
+        rebalance_intensity = 1.0 if requested else 0.0
         return {
             "weights": executed_weights.squeeze(0).detach().cpu().numpy(),
             "candidate_weights": candidate_weights.squeeze(0).detach().cpu().numpy(),
-            "rebalance": int(gate_action.view(-1)[0].detach().cpu()),
-            "rebalance_intensity": float(gate_action.view(-1)[0].detach().cpu()),
-            "gate_action": int(gate_action.view(-1)[0].detach().cpu()),
+            "rebalance": int(requested),
+            "rebalance_intensity": rebalance_intensity,
+            "gate_action": int(requested),
+            "raw_bernoulli_gate_action": raw_gate_action,
             "candidate_log_prob": float(candidate_log_prob.view(-1)[0].detach().cpu()),
             "gate_log_prob": float(gate_log_prob.view(-1)[0].detach().cpu()),
             "gate_entropy": float(gate_entropy.view(-1)[0].detach().cpu()),
             "p_rebalance": float(p_rebalance.view(-1)[0].detach().cpu()),
             "deterministic_gate_threshold": float(gate_threshold),
             "value": float(value.view(-1)[0].detach().cpu()),
-            "estimated_turnover": float(turnover.view(-1)[0].detach().cpu()),
+            "estimated_turnover": turnover_value,
+            "candidate_turnover": turnover_value,
+            "candidate_turnover_estimate": turnover_value,
             "estimated_cost": 0.0,
+            "continuous_weight_rebalance_gate": True,
+            "rebalance_turnover_threshold": threshold,
+            "raw_model_requested_rebalance": bool(raw_gate_action),
+            "raw_action": raw_gate_action,
+            "raw_rho": float(raw_gate_action),
+            "raw_rebalance_intensity": float(raw_gate_action),
+            "first_trade": first_trade,
+            "forced_hold_reason": forced_hold_reason,
         }
 
     def _update(self, rollout: Mapping[str, list[Any]]) -> dict[str, float]:
@@ -305,6 +343,7 @@ class NativeBernoulliGatedPPOBaselineStrategy(BaseStrategy):
         old_candidate_log_prob = _column_tensor(rollout["candidate_log_prob"], self.device)
         old_gate_log_prob = _column_tensor(rollout["gate_log_prob"], self.device)
         gate_action = _column_tensor(rollout["gate_action"], self.device)
+        executed_gate_action = _column_tensor(rollout.get("executed_gate_action", rollout["gate_action"]), self.device)
         returns = _column_tensor(rollout["return"], self.device)
         advantages = _column_tensor(rollout["advantage"], self.device)
 
@@ -323,7 +362,7 @@ class NativeBernoulliGatedPPOBaselineStrategy(BaseStrategy):
             old_candidate_log_prob,
             advantages,
             clip_range=clip_range,
-            loss_weight=gate_action,
+            loss_weight=executed_gate_action,
         )
         gate_loss = _clipped_policy_loss(
             gate_log_prob,

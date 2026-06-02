@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from torch.distributions import Bernoulli
 
 from .deep_training import collect_training_batch, deep_baseline_training_config, iter_minibatches, training_summary
+from .eiie import _binary_gate_rebalance_decision
 from .ppo_baseline import PPOBaselineStrategy, _blend_with_fitted_prior
 from ..envs.state import DecisionMarketState, PortfolioState, PortfolioAction
 from ..models.cost_estimator import CostEstimator
@@ -100,36 +101,41 @@ class BernoulliGatedPPOStrategy(PPOBaselineStrategy):
             gate_log_prob = Bernoulli(logits=gate_logit).log_prob(gate_action.to(dtype=gate_logit.dtype))
             
         target_weights = candidate_weights.squeeze(0).detach().cpu().numpy()
-        rebalance_action = int(gate_action.item())
+        raw_gate_action = int(gate_action.item())
+        rebalance_decision = _binary_gate_rebalance_decision(
+            self.config,
+            self.strategy_name,
+            portfolio_state,
+            target_weights,
+            raw_gate_action,
+            getattr(self, "decision_context", {}),
+        )
+        rebalance_action = int(rebalance_decision["rebalance_action"])
+        rebalance_intensity = float(rebalance_decision["rebalance_intensity"])
         q_values = gate_q.squeeze(0).detach().cpu().numpy()
         policy_log_prob = float(outputs["log_prob"].squeeze(0).detach().cpu().item())
         gate_log_prob_value = float(gate_log_prob.squeeze(0).detach().cpu().item())
-        estimated_turnover_value = float(estimated_turnover.squeeze(0).detach().cpu().item())
         estimated_cost_value = float(estimated_cost.squeeze(0).detach().cpu().item())
         
         return self.validate_portfolio_action(
             PortfolioAction(
                 target_weights=target_weights,
                 rebalance_action=rebalance_action,
-                rebalance_intensity=1.0 if rebalance_action else 0.0,
+                rebalance_intensity=rebalance_intensity,
                 action_info={
                     "strategy": self.strategy_name,
                     "gate_action": rebalance_action,
-                    "raw_model_requested_rebalance": bool(rebalance_action),
-                    "raw_action": int(rebalance_action),
-                    "raw_rho": 1.0 if rebalance_action else 0.0,
-                    "raw_rebalance_intensity": 1.0 if rebalance_action else 0.0,
-                    "rebalance_intensity": 1.0 if rebalance_action else 0.0,
+                    "raw_gate_action": raw_gate_action,
                     "gate_log_prob": gate_log_prob_value,
                     "decision_log_prob": gate_log_prob_value,
                     "candidate_log_prob": policy_log_prob,
                     "q_hold": float(q_values[0]),
                     "q_rebalance": float(q_values[1]),
                     "q_gap": float(q_values[1] - q_values[0]),
-                    "estimated_turnover": estimated_turnover_value,
                     "estimated_cost": estimated_cost_value,
                     "prior_blend_weight": self.prior_blend_weight,
                     "gate_input_fields": GATE_INPUT_FIELDS,
+                    **rebalance_decision["action_info"],
                 }
             )
         )

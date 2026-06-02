@@ -9,6 +9,7 @@ import torch.nn.functional as F
 
 from .base_strategy import BaseStrategy
 from .deep_training import collect_training_batch, deep_baseline_training_config, iter_minibatches, training_summary
+from .eiie import _binary_gate_rebalance_decision
 from .ppo_baseline import _enforce_masked_simplex, _fit_return_prior_weights
 from ..envs.state import DecisionMarketState, PortfolioState, PortfolioAction
 from ..models.cost_estimator import CostEstimator
@@ -102,26 +103,37 @@ class DQNOnlyStrategy(BaseStrategy):
             action_idx = torch.argmax(q_values, dim=1).item()
             
         template = self.templates[action_idx]
-        target_weights, rebalance_action = self._target_from_template(template, state, portfolio_state)
+        target_weights, raw_rebalance_action = self._target_from_template(template, state, portfolio_state)
+        rebalance_decision = _binary_gate_rebalance_decision(
+            self.config,
+            self.strategy_name,
+            portfolio_state,
+            target_weights,
+            raw_rebalance_action,
+            getattr(self, "decision_context", {}),
+        )
+        rebalance_action = int(rebalance_decision["rebalance_action"])
+        rebalance_intensity = float(rebalance_decision["rebalance_intensity"])
         q_row = q_values.squeeze(0).detach().cpu().numpy()
-        estimated_turnover_value = float(estimated_turnover.squeeze(0).detach().cpu().item())
         estimated_cost_value = float(estimated_cost.squeeze(0).detach().cpu().item())
         
         return self.validate_portfolio_action(
             PortfolioAction(
                 target_weights=target_weights,
                 rebalance_action=rebalance_action,
-                rebalance_intensity=1.0 if rebalance_action else 0.0,
+                rebalance_intensity=rebalance_intensity,
                 action_info={
                     "strategy": "dqn_only",
                     "template_chosen": template,
                     "template_index": int(action_idx),
                     "target_source": "template",
                     "gate_candidate_template": candidate_template,
+                    "gate_action": int(rebalance_action),
+                    "raw_gate_action": int(raw_rebalance_action),
                     "q_values": q_row,
-                    "estimated_turnover": estimated_turnover_value,
                     "estimated_cost": estimated_cost_value,
                     "gate_input_fields": GATE_INPUT_FIELDS,
+                    **rebalance_decision["action_info"],
                     **_binary_q_info(q_row),
                 }
             )
@@ -134,7 +146,7 @@ class DQNOnlyStrategy(BaseStrategy):
         portfolio_state: PortfolioState,
     ) -> tuple[np.ndarray, int]:
         if template == "hold":
-            return np.asarray(portfolio_state.current_weights, dtype=float).copy(), 0
+            return self._template_weights(template, decision_market_state, portfolio_state), 0
         if template == "equal_weight":
             return self._template_weights(template, decision_market_state, portfolio_state), 1
         raise ValueError(f"ERR_DQN_ONLY_TEMPLATE_NOT_IMPLEMENTED: {template}")
@@ -146,7 +158,10 @@ class DQNOnlyStrategy(BaseStrategy):
         portfolio_state: PortfolioState,
     ) -> np.ndarray:
         if template == "hold":
-            return np.asarray(portfolio_state.current_weights, dtype=float).copy()
+            current = np.asarray(portfolio_state.current_weights, dtype=float).copy()
+            if float(np.maximum(current, 0.0).sum()) <= 0.0:
+                return self._template_weights("equal_weight", decision_market_state, portfolio_state)
+            return current
         if template == "equal_weight":
             if self.fitted_prior_weights is not None:
                 return _enforce_masked_simplex(self.fitted_prior_weights, decision_market_state.available_mask_at_decision)

@@ -113,6 +113,11 @@ class GTRCPOLiteStrategy(BaseStrategy):
             "gate_action": int(rho > 0.0),
             "gate_action_index": int(action_index),
             "rho": float(rho),
+            "raw_rho": float(rho),
+            "raw_rebalance_intensity": float(rho),
+            "raw_model_requested_rebalance": bool(rho > 0.0),
+            "raw_action": int(rho > 0.0),
+            "raw_gate_action_index": int(action_index),
             "rebalance_intensity": float(rho),
             "rebalance_values": json.dumps(scores, sort_keys=True, separators=(",", ":")),
             "q_hold": float(scores.get("0", scores.get("0.0", 0.0))),
@@ -142,7 +147,7 @@ class GTRCPOLiteStrategy(BaseStrategy):
         return self.validate_portfolio_action(
             PortfolioAction(
                 target_weights=candidate,
-                rebalance_action=1 if scheduler_allowed and rho > 0.0 else 0,
+                rebalance_action=1 if rho > 0.0 else 0,
                 rebalance_intensity=float(rho),
                 action_info=action_info,
             )
@@ -174,8 +179,7 @@ class GTRCPOLiteStrategy(BaseStrategy):
         cvar_loss_5: float,
         drawdown: float,
     ) -> tuple[float, dict[str, float], str | None]:
-        if not scheduler_allowed:
-            return 0.0, {"0": 0.0}, "scheduler_blocked"
+        _ = scheduler_allowed
         if first_trade and bool(mapping(self.config.get("gt_rcpo_lite")).get("initial_build_full_rho", True)):
             return 1.0, {str(value).rstrip("0").rstrip("."): float(value) for value in self.rho_values}, None
         section = mapping(self.config.get("gt_rcpo_lite"))

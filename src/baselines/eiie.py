@@ -220,6 +220,52 @@ def _continuous_weight_rebalance_decision(
     }
 
 
+def _binary_gate_rebalance_decision(
+    config: Mapping[str, Any],
+    model_key: str,
+    portfolio_state: PortfolioState,
+    target_weights: np.ndarray,
+    raw_gate_action: int | bool,
+    decision_context: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    current = np.asarray(portfolio_state.current_weights, dtype=float).copy()
+    target = np.asarray(target_weights, dtype=float).copy()
+    estimated_turnover = float(0.5 * np.sum(np.abs(target - current)))
+    threshold = _rebalance_turnover_threshold(config, model_key)
+    context = _mapping(decision_context)
+    first_trade = bool(context.get("first_trade", bool(portfolio_state.step_index == 0 and current.sum() <= 0.0)))
+    scheduler_allowed = bool(context.get("scheduler_allowed_rebalance", True))
+    raw_requested = bool(int(raw_gate_action))
+    requested = bool(first_trade or (raw_requested and scheduler_allowed and estimated_turnover > threshold + 1.0e-12))
+    forced_hold_reason = None
+    if not requested:
+        if not raw_requested:
+            forced_hold_reason = "model_chosen_hold"
+        elif not scheduler_allowed:
+            forced_hold_reason = "scheduler_blocked"
+        else:
+            forced_hold_reason = "below_rebalance_turnover_threshold"
+    return {
+        "rebalance_action": int(requested),
+        "rebalance_intensity": 1.0 if requested else 0.0,
+        "action_info": {
+            "continuous_weight_rebalance_gate": True,
+            "estimated_turnover": estimated_turnover,
+            "candidate_turnover": estimated_turnover,
+            "candidate_turnover_estimate": estimated_turnover,
+            "rebalance_turnover_threshold": threshold,
+            "raw_model_requested_rebalance": raw_requested,
+            "raw_action": int(raw_requested),
+            "raw_rho": 1.0 if raw_requested else 0.0,
+            "raw_rebalance_intensity": 1.0 if raw_requested else 0.0,
+            "rebalance_intensity": 1.0 if requested else 0.0,
+            "scheduler_allowed_rebalance": scheduler_allowed,
+            "first_trade": first_trade,
+            "forced_hold_reason": forced_hold_reason,
+        },
+    }
+
+
 def _rebalance_turnover_threshold(config: Mapping[str, Any], model_key: str) -> float:
     model_config = _mapping(config.get(model_key))
     for key in ("rebalance_turnover_threshold", "turnover_gate_threshold", "min_rebalance_turnover"):

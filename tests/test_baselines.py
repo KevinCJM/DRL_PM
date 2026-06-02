@@ -200,6 +200,167 @@ def test_gated_and_dqn_only_baseline_contract():
         DQNOnlyStrategy({**config, "dqn_only": {"templates": ["hold", "momentum"]}})
 
 
+def test_bernoulli_proxy_gate_respects_turnover_threshold():
+    from src.baselines.bernoulli_gated_ppo import BernoulliGatedPPOStrategy
+
+    n_assets = 4
+    n_features = 3
+    window_size = 5
+    strategy = BernoulliGatedPPOStrategy(
+        {
+            "n_assets": n_assets,
+            "n_features": n_features,
+            "window_size": window_size,
+            "latent_dim": 8,
+            "encoder": {"type": "mlp"},
+            "bernoulli_gated_ppo": {"rebalance_turnover_threshold": 0.05},
+        }
+    )
+    with torch.no_grad():
+        for parameter in strategy.model.parameters():
+            parameter.zero_()
+        for parameter in strategy.gate.parameters():
+            parameter.zero_()
+        strategy.gate.advantage_net.bias[1] = 10.0
+
+    action = strategy.compute_target_weights(
+        _mock_decision_market_state(n_assets, n_features, window_size),
+        _mock_portfolio_state(n_assets),
+    )
+
+    assert action.action_info["raw_gate_action"] == 1
+    assert action.action_info["raw_model_requested_rebalance"] is True
+    assert action.rebalance_action == 0
+    assert action.rebalance_intensity == 0.0
+    assert action.action_info["gate_action"] == 0
+    assert action.action_info["estimated_turnover"] == pytest.approx(0.0)
+    assert action.action_info["forced_hold_reason"] == "below_rebalance_turnover_threshold"
+
+
+def test_dqn_only_hold_template_reports_final_target_turnover_zero():
+    from src.baselines.dqn_only import DQNOnlyStrategy
+
+    n_assets = 4
+    n_features = 3
+    window_size = 5
+    strategy = DQNOnlyStrategy(
+        {
+            "n_assets": n_assets,
+            "n_features": n_features,
+            "window_size": window_size,
+            "latent_dim": 8,
+            "encoder": {"type": "mlp"},
+            "dqn_only": {"templates": ["hold", "equal_weight"]},
+        }
+    )
+    with torch.no_grad():
+        for parameter in strategy.encoder.parameters():
+            parameter.zero_()
+        for parameter in strategy.gate.parameters():
+            parameter.zero_()
+        strategy.gate.advantage_net.bias[0] = 10.0
+    portfolio = PortfolioState(
+        date=pd.Timestamp("2024-01-01"),
+        nav=1.0,
+        portfolio_value=1e8,
+        current_weights=np.array([0.70, 0.10, 0.10, 0.10]),
+        step_index=4,
+    )
+
+    action = strategy.compute_target_weights(_mock_decision_market_state(n_assets, n_features, window_size), portfolio)
+
+    assert action.action_info["template_chosen"] == "hold"
+    assert action.action_info["raw_gate_action"] == 0
+    assert action.rebalance_action == 0
+    assert action.rebalance_intensity == 0.0
+    assert action.action_info["estimated_turnover"] == pytest.approx(0.0)
+    assert action.action_info["forced_hold_reason"] == "model_chosen_hold"
+
+
+def test_dqn_only_hold_template_initializes_empty_portfolio():
+    from src.baselines.dqn_only import DQNOnlyStrategy
+
+    n_assets = 4
+    n_features = 3
+    window_size = 5
+    strategy = DQNOnlyStrategy(
+        {
+            "n_assets": n_assets,
+            "n_features": n_features,
+            "window_size": window_size,
+            "latent_dim": 8,
+            "encoder": {"type": "mlp"},
+            "dqn_only": {"templates": ["hold", "equal_weight"]},
+        }
+    )
+    with torch.no_grad():
+        for parameter in strategy.encoder.parameters():
+            parameter.zero_()
+        for parameter in strategy.gate.parameters():
+            parameter.zero_()
+        strategy.gate.advantage_net.bias[0] = 10.0
+    portfolio = PortfolioState(
+        date=pd.Timestamp("2024-01-01"),
+        nav=1.0,
+        portfolio_value=1e8,
+        current_weights=np.zeros(n_assets),
+        step_index=0,
+    )
+
+    action = strategy.compute_target_weights(_mock_decision_market_state(n_assets, n_features, window_size), portfolio)
+
+    assert action.action_info["template_chosen"] == "hold"
+    assert action.action_info["raw_gate_action"] == 0
+    assert action.action_info["raw_model_requested_rebalance"] is False
+    assert action.action_info["first_trade"] is True
+    assert action.rebalance_action == 1
+    assert action.rebalance_intensity == 1.0
+    assert action.action_info["gate_action"] == 1
+    assert action.action_info["estimated_turnover"] == pytest.approx(0.5)
+    assert action.action_info["forced_hold_reason"] is None
+    np.testing.assert_allclose(action.target_weights, np.ones(n_assets) / n_assets, atol=1.0e-6)
+
+
+def test_dqn_only_rebalance_template_respects_turnover_threshold():
+    from src.baselines.dqn_only import DQNOnlyStrategy
+
+    n_assets = 4
+    n_features = 3
+    window_size = 5
+    strategy = DQNOnlyStrategy(
+        {
+            "n_assets": n_assets,
+            "n_features": n_features,
+            "window_size": window_size,
+            "latent_dim": 8,
+            "encoder": {"type": "mlp"},
+            "dqn_only": {
+                "templates": ["equal_weight"],
+                "rebalance_turnover_threshold": 0.05,
+            },
+        }
+    )
+    with torch.no_grad():
+        for parameter in strategy.encoder.parameters():
+            parameter.zero_()
+        for parameter in strategy.gate.parameters():
+            parameter.zero_()
+
+    action = strategy.compute_target_weights(
+        _mock_decision_market_state(n_assets, n_features, window_size),
+        _mock_portfolio_state(n_assets),
+    )
+
+    assert action.action_info["template_chosen"] == "equal_weight"
+    assert action.action_info["raw_gate_action"] == 1
+    assert action.action_info["raw_model_requested_rebalance"] is True
+    assert action.rebalance_action == 0
+    assert action.rebalance_intensity == 0.0
+    assert action.action_info["gate_action"] == 0
+    assert action.action_info["estimated_turnover"] == pytest.approx(0.0)
+    assert action.action_info["forced_hold_reason"] == "below_rebalance_turnover_threshold"
+
+
 def test_deep_baseline_training_targets_next_open_holding_return():
     from src.baselines.deep_training import collect_training_batch, deep_baseline_training_config, training_summary
     from src.config import DEFAULT_CONFIG
@@ -561,6 +722,45 @@ def test_native_cnn_ppo_holds_when_turnover_below_threshold():
     assert action.action_info["estimated_turnover"] == pytest.approx(0.0)
 
 
+def test_native_bernoulli_gate_respects_turnover_threshold():
+    from src.baselines.native_bernoulli_gated_ppo import NativeBernoulliGatedPPOBaselineStrategy
+
+    n_assets = 4
+    n_features = 3
+    window_size = 5
+    strategy = NativeBernoulliGatedPPOBaselineStrategy(
+        {
+            "n_assets": n_assets,
+            "n_features": n_features,
+            "window_size": window_size,
+            "latent_dim": 8,
+            "encoder": {"type": "mlp"},
+            "bernoulli_gated_ppo_native": {"rebalance_turnover_threshold": 0.05},
+        }
+    )
+    with torch.no_grad():
+        for parameter in strategy.actor.parameters():
+            parameter.zero_()
+        for parameter in strategy.gate.parameters():
+            parameter.zero_()
+        strategy.gate.net[-1].bias.fill_(10.0)
+
+    action = strategy.compute_target_weights(
+        _mock_decision_market_state(n_assets, n_features, window_size),
+        _mock_portfolio_state(n_assets),
+    )
+
+    assert action.action_info["raw_bernoulli_gate_action"] == 1
+    assert action.action_info["raw_model_requested_rebalance"] is True
+    assert action.action_info["raw_action"] == 1
+    assert action.action_info["raw_rho"] == pytest.approx(1.0)
+    assert action.rebalance_action == 0
+    assert action.rebalance_intensity == 0.0
+    assert action.action_info["gate_action"] == 0
+    assert action.action_info["estimated_turnover"] == pytest.approx(0.0)
+    assert action.action_info["forced_hold_reason"] == "below_rebalance_turnover_threshold"
+
+
 def test_pgportfolio_pvm_updates_current_sample_only():
     from src.baselines.pgportfolio_eiie import _apply_pvm_updates, _initial_pvm
 
@@ -770,7 +970,51 @@ def test_dqn_template_hold_action_returns_rebalance_zero():
     assert action.rebalance_action == 0
     assert action.rebalance_intensity == 0.0
     assert action.action_info["template_chosen"] == "hold"
+    assert action.action_info["gate_action"] == 0
+    assert action.action_info["gate_action_index"] == 0
     np.testing.assert_allclose(action.target_weights, portfolio.current_weights, atol=1.0e-6)
+
+
+def test_dqn_template_gate_action_is_binary_template_index_is_separate(monkeypatch):
+    from src.baselines import native_dqn_template as module
+    from src.baselines.native_dqn_template import NativeDQNTemplateStrategy, TemplateWeights
+
+    n_assets = 4
+    n_features = 3
+    window_size = 5
+
+    def fake_templates(observation, config):
+        weights = np.tile(np.ones(n_assets, dtype=np.float32) / n_assets, (8, 1))
+        weights[2] = np.array([0.70, 0.10, 0.10, 0.10], dtype=np.float32)
+        valid_mask = np.zeros(8, dtype=bool)
+        valid_mask[2] = True
+        return TemplateWeights(weights, valid_mask)
+
+    monkeypatch.setattr(module, "template_weights_from_observation", fake_templates)
+    strategy = NativeDQNTemplateStrategy(
+        {
+            "n_assets": n_assets,
+            "n_features": n_features,
+            "window_size": window_size,
+            "latent_dim": 8,
+            "encoder": {"type": "mlp"},
+            "dqn": {"use_prioritized_replay": False, "use_n_step": False},
+        }
+    )
+    with torch.no_grad():
+        for parameter in strategy.agent.online_network.parameters():
+            parameter.zero_()
+        strategy.agent.online_network.net[-1].bias[2] = 10.0
+
+    action = strategy.compute_target_weights(
+        _mock_decision_market_state(n_assets, n_features, window_size),
+        _mock_portfolio_state(n_assets),
+    )
+
+    assert action.rebalance_action == 1
+    assert action.action_info["gate_action"] == 1
+    assert action.action_info["gate_action_index"] == 2
+    assert action.action_info["template_action_index"] == 2
 
 
 def test_dqn_template_replay_records_invalid_auxiliary_fields():
