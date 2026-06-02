@@ -851,6 +851,10 @@ class TrainedFullGatedStrategy(BaseStrategy):
                 rebalance_intensity=float(action_info["rebalance_intensity"]),
                 action_info={
                     "strategy": self.strategy_name,
+                    "paper_model_id": self.strategy_name,
+                    "child_model_name": self.strategy_name,
+                    "baseline_family": "platform_native_rl",
+                    "platform_native_rl_training": True,
                     "gate_action": int(action_info["gate_action"]),
                     "q_hold": action_info["q_hold"],
                     "q_rebalance": action_info["q_rebalance"],
@@ -1630,9 +1634,11 @@ def _is_empty_frame(value: Any) -> bool:
     return isinstance(value, pd.DataFrame) and value.empty and len(value.columns) == 0
 
 
-def objective_metric(result: Mapping[str, Any], metric: str) -> float:
+def objective_metric(result: Mapping[str, Any], metric: str, config: Mapping[str, Any] | None = None) -> float:
     metric_key = VALIDATION_METRIC_ALIASES.get(str(metric), str(metric))
     metrics = result.get("metrics") if isinstance(result.get("metrics"), Mapping) else {}
+    if metric_key == "validation_return_risk_cost_constrained":
+        return _validation_return_risk_cost_constrained(result, config=config)
     if metric_key in result:
         return float(result[metric_key])
     if metric_key in metrics:
@@ -1649,6 +1655,66 @@ def objective_metric(result: Mapping[str, Any], metric: str) -> float:
                 average_turnover = float(metrics.get("average_turnover", 0.0) or 0.0)
                 return sharpe - max_drawdown - average_turnover
     raise ValueError(f"ERR_EXPERIMENT_METRIC_MISSING: {metric_key}")
+
+
+def _validation_return_risk_cost_constrained(
+    result: Mapping[str, Any],
+    *,
+    config: Mapping[str, Any] | None = None,
+) -> float:
+    metrics = result.get("metrics") if isinstance(result.get("metrics"), Mapping) else {}
+    daily_returns = result.get("daily_returns")
+    if not isinstance(daily_returns, pd.DataFrame) or daily_returns.empty or "net_return" not in daily_returns.columns:
+        raise ValueError("failed_metric_unavailable")
+    returns = pd.to_numeric(daily_returns["net_return"], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    if returns.empty:
+        raise ValueError("failed_metric_unavailable")
+    std = float(returns.std(ddof=0))
+    sharpe = 0.0 if std <= 0.0 else float(returns.mean() / std * np.sqrt(252.0))
+    nav = pd.to_numeric(daily_returns.get("nav"), errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    max_drawdown_loss = _max_drawdown(nav)
+    cvar_loss_5 = _cvar_loss(returns)
+    constraints = _activity_constraints(config)
+    model_rebalance_hit_rate = float(metrics.get("model_rebalance_hit_rate", 0.0) or 0.0)
+    non_initial_turnover = float(metrics.get("non_initial_turnover_per_opportunity", 0.0) or 0.0)
+    avg_turnover = float(metrics.get("average_turnover", 0.0) or 0.0)
+    total_cost = float(metrics.get("total_transaction_cost", 0.0) or 0.0)
+    base = sharpe - max_drawdown_loss - cvar_loss_5
+    activity_underuse_penalty = (
+        float(constraints.get("hit_rate_underuse_penalty", 5.0))
+        * max(0.0, float(constraints.get("min_model_rebalance_hit_rate", 0.05)) - model_rebalance_hit_rate)
+        + float(constraints.get("turnover_underuse_penalty", 5.0))
+        * max(0.0, float(constraints.get("min_non_initial_turnover_per_opportunity", 0.002)) - non_initial_turnover)
+    )
+    max_hit_rate = constraints.get("max_model_rebalance_hit_rate")
+    hit_rate_overuse = 0.0
+    if max_hit_rate is not None:
+        hit_rate_overuse = float(
+            constraints.get("hit_rate_overuse_penalty", constraints.get("turnover_overuse_penalty", 2.0))
+        ) * max(0.0, model_rebalance_hit_rate - float(max_hit_rate))
+    turnover_overuse = float(constraints.get("turnover_overuse_penalty", 2.0)) * max(
+        0.0,
+        avg_turnover - float(constraints.get("max_average_turnover", 0.030)),
+    )
+    cost_penalty = float(constraints.get("cost_over_budget_penalty", 10.0)) * max(
+        0.0,
+        total_cost - float(constraints.get("cost_budget", 0.010)),
+    )
+    return float(base - activity_underuse_penalty - hit_rate_overuse - turnover_overuse - cost_penalty)
+
+
+def _activity_constraints(config: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if not isinstance(config, Mapping):
+        return {}
+    return mapping(mapping(config.get("hpo")).get("activity_constraints"))
+
+
+def _cvar_loss(returns: pd.Series) -> float:
+    values = returns.to_numpy(dtype=float)
+    if values.size == 0:
+        return np.nan
+    tail_n = max(1, int(np.ceil(0.05 * values.size)))
+    return float(max(0.0, -float(np.mean(np.sort(values)[:tail_n]))))
 
 
 def _portfolio_env(
@@ -1837,11 +1903,12 @@ def _seed_values(config: Mapping[str, Any]) -> list[int]:
     return [int(value) for value in values]
 
 
-def _seed_aggregate_summary(metrics_by_seed: Mapping[int, Mapping[str, float]], model_name: str) -> pd.DataFrame:
+def _seed_aggregate_summary(metrics_by_seed: Mapping[int, Mapping[str, Any]], model_name: str) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     metric_names = sorted({metric for metrics in metrics_by_seed.values() for metric in metrics})
     for metric_name in metric_names:
-        values = np.asarray([metrics[metric_name] for metrics in metrics_by_seed.values() if metric_name in metrics], dtype=float)
+        raw_values = [metrics[metric_name] for metrics in metrics_by_seed.values() if metric_name in metrics]
+        values = pd.to_numeric(pd.Series(raw_values), errors="coerce").dropna().to_numpy(dtype=float)
         if values.size == 0:
             continue
         rows.append(
@@ -2636,7 +2703,7 @@ def _select_statistics_benchmark(returns_by_model: Mapping[str, pd.DataFrame], c
     return names[0] if names else None
 
 
-def _mean_metrics(metrics_by_seed: Mapping[int, Mapping[str, float]]) -> dict[str, float]:
+def _mean_metrics(metrics_by_seed: Mapping[int, Mapping[str, Any]]) -> dict[str, float]:
     summary = _seed_aggregate_summary(metrics_by_seed, "model")
     if summary.empty:
         return {}

@@ -40,6 +40,27 @@ FORBIDDEN_OUTPUT_DIRS = (
     Path("data/metrics_factory"),
     Path("data/reports"),
 )
+PLATFORM_NATIVE_RL_FAMILY_ALIASES = frozenset(
+    {
+        "native_rl",
+        "native_rl_reimplementation",
+        "new_model_extension",
+    }
+)
+PLATFORM_NATIVE_RL_MODEL_NAMES = frozenset(
+    {
+        "full_dqn_gated_multitask_cnn_ppo",
+        "ppo_native",
+        "cnn_ppo_native",
+        "bernoulli_gated_ppo_native",
+        "dqn_template_native",
+        "eiie_native",
+        "pgportfolio_eiie_native",
+        "ppo_dqn_hierarchical_reimplementation",
+        HYBRID_DQN_OPTIMIZER_ALIAS,
+        *HYBRID_DQN_OPTIMIZER_CHILD_MODEL_NAMES,
+    }
+)
 HPO_TRIAL_COLUMNS = (
     "model_name",
     "fold_id",
@@ -314,7 +335,7 @@ def _run_equal_budget_hpo(experiment: HPOExperiment, model_names: Sequence[str])
         try:
             payload = dict(_run_hpo_single(model_experiment))
         except Exception as exc:
-            if not _is_hybrid_optimizer_child(model_name):
+            if not diagnostic_run and not _is_hybrid_optimizer_child(model_name):
                 raise
             failure = _hybrid_child_failure(model_name, exc)
             if not diagnostic_run:
@@ -329,13 +350,9 @@ def _run_equal_budget_hpo(experiment: HPOExperiment, model_names: Sequence[str])
             child_failures.append(failure)
             child_failure_handled = True
         payload["hpo_model_name"] = model_name
-        if (
-            not child_failure_handled
-            and _is_hybrid_optimizer_child(model_name)
-            and _is_failed_hpo_child_payload(payload)
-        ):
+        if not child_failure_handled and _is_failed_hpo_child_payload(payload):
             failure = _hybrid_child_failure(model_name, payload)
-            if not diagnostic_run:
+            if not diagnostic_run and _is_hybrid_optimizer_child(model_name):
                 return _hybrid_required_child_failed_result(
                     config,
                     run_dir,
@@ -343,6 +360,8 @@ def _run_equal_budget_hpo(experiment: HPOExperiment, model_names: Sequence[str])
                     model_payloads,
                     failure,
                 )
+            if not diagnostic_run and not _is_hybrid_optimizer_child(model_name):
+                raise RuntimeError(str(failure.get("reason") or failure.get("child_status") or "failed"))
             payload.update(_hybrid_child_failure_payload(failure))
             child_failures.append(failure)
         model_payloads.append(payload)
@@ -781,6 +800,122 @@ def _dedupe_strings(values: Any) -> list[str]:
     return result
 
 
+def _activity_trial_failure_reason(result: Mapping[str, Any], config: Mapping[str, Any]) -> str | None:
+    hpo_cfg = _mapping(config.get("hpo"))
+    constraints = _mapping(hpo_cfg.get("activity_constraints"))
+    activity = _mapping(config.get("execution_activity"))
+    if constraints.get("enabled") is not True or activity.get("activity_gate_enforced") is not True:
+        return None
+    protocol = str(activity.get("protocol", "monthly_gate"))
+    scope_protocols = {str(item) for item in constraints.get("scope_activity_protocols", [])}
+    if protocol not in scope_protocols:
+        return None
+    families = _result_baseline_families(result)
+    scope_families = {str(item) for item in constraints.get("scope_baseline_families", [])}
+    if not families or families.isdisjoint(scope_families):
+        return None
+    metrics = _mapping(result.get("metrics"))
+    hit_rate = float(metrics.get("model_rebalance_hit_rate", 0.0) or 0.0)
+    turnover_per_opportunity = float(metrics.get("non_initial_turnover_per_opportunity", 0.0) or 0.0)
+    avg_turnover = float(metrics.get("average_turnover", 0.0) or 0.0)
+    min_hit_rate = float(constraints.get("min_model_rebalance_hit_rate", 0.05))
+    max_hit_rate = constraints.get("max_model_rebalance_hit_rate")
+    max_average_turnover = constraints.get("max_average_turnover")
+    if hit_rate < min_hit_rate and _rho_policy_collapsed(result, config):
+        return "failed_rho_policy_collapsed"
+    if hit_rate < min_hit_rate:
+        return "failed_low_trade_activity"
+    if turnover_per_opportunity < float(constraints.get("min_non_initial_turnover_per_opportunity", 0.002)):
+        return "failed_low_trade_activity"
+    if max_hit_rate is not None and hit_rate > float(max_hit_rate):
+        return "failed_high_trade_activity"
+    if max_average_turnover is not None and avg_turnover > float(max_average_turnover):
+        return "failed_high_trade_activity"
+    return None
+
+
+def _result_baseline_families(result: Mapping[str, Any]) -> set[str]:
+    families: set[str] = set()
+    model_names: set[str] = set()
+    diagnostics = result.get("baseline_daily_diagnostics")
+    if isinstance(diagnostics, pd.DataFrame) and "baseline_family" in diagnostics.columns:
+        families.update(diagnostics["baseline_family"].dropna().astype(str).tolist())
+        model_names.update(_frame_string_values(diagnostics, "model_name"))
+        model_names.update(_frame_string_values(diagnostics, "paper_model_id"))
+        if _frame_has_truthy(diagnostics, "platform_native_rl_training"):
+            families.add("platform_native_rl")
+    comparison = result.get("main_comparison")
+    if isinstance(comparison, pd.DataFrame) and "baseline_family" in comparison.columns:
+        families.update(comparison["baseline_family"].dropna().astype(str).tolist())
+        model_names.update(_frame_string_values(comparison, "model_name"))
+        model_names.update(_frame_string_values(comparison, "paper_model_id"))
+        if _frame_has_truthy(comparison, "platform_native_rl_training"):
+            families.add("platform_native_rl")
+    model_name = result.get("model_name")
+    if model_name is not None:
+        model_names.add(str(model_name))
+    if families.intersection(PLATFORM_NATIVE_RL_FAMILY_ALIASES) or model_names.intersection(PLATFORM_NATIVE_RL_MODEL_NAMES):
+        families.add("platform_native_rl")
+    return families
+
+
+def _frame_string_values(frame: pd.DataFrame, column: str) -> set[str]:
+    if column not in frame.columns:
+        return set()
+    return {str(value) for value in frame[column].dropna().tolist() if str(value).strip()}
+
+
+def _frame_has_truthy(frame: pd.DataFrame, column: str) -> bool:
+    if column not in frame.columns:
+        return False
+    return any(_truthy(value) for value in frame[column].dropna().tolist())
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return bool(value) and not math.isnan(float(value))
+    text = str(value).strip().lower()
+    return text in {"1", "true", "yes", "y", "on"}
+
+
+def _rho_policy_collapsed(result: Mapping[str, Any], config: Mapping[str, Any]) -> bool:
+    section = _mapping(config.get("ra_gt_rcpo"))
+    if str(section.get("rho_policy", "score_rho_normalized")) not in {"learned", "straight_through_gumbel_softmax_v1"}:
+        return False
+    threshold = _rho_entropy_threshold(section)
+    entropy = _rho_entropy_series(result)
+    if entropy.empty:
+        return False
+    return float(entropy.mean()) < threshold
+
+
+def _rho_entropy_threshold(section: Mapping[str, Any]) -> float:
+    temperature = _mapping(section.get("rho_temperature"))
+    return float(temperature.get("min_entropy_threshold", section.get("rho_min_entropy_threshold", 0.05)))
+
+
+def _rho_entropy_series(result: Mapping[str, Any]) -> pd.Series:
+    frames: list[pd.Series] = []
+    diagnostics = result.get("baseline_daily_diagnostics")
+    if isinstance(diagnostics, pd.DataFrame) and "rho_entropy" in diagnostics.columns:
+        frames.append(pd.to_numeric(diagnostics["rho_entropy"], errors="coerce"))
+    history = result.get("training_history")
+    if isinstance(history, pd.DataFrame) and "rho_entropy" in history.columns:
+        frames.append(pd.to_numeric(history["rho_entropy"], errors="coerce"))
+    elif isinstance(history, Sequence) and not isinstance(history, (str, bytes)):
+        frame = pd.DataFrame(history)
+        if "rho_entropy" in frame.columns:
+            frames.append(pd.to_numeric(frame["rho_entropy"], errors="coerce"))
+    if not frames:
+        return pd.Series(dtype=float)
+    values = pd.concat(frames, ignore_index=True).dropna()
+    return values.loc[values.map(math.isfinite)]
+
+
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
@@ -857,6 +992,9 @@ def _run_hpo_single(experiment: HPOExperiment) -> Mapping[str, Any]:
             trial_result = _result_mapping(_run_hpo_trial(experiment, trial, train_split, validation_split))
             validation_metric = _metric_value(trial_result, metric)
             objective_value = float(trial_result.get("objective_value", validation_metric))
+            activity_failure = _activity_trial_failure_reason(trial_result, config)
+            if activity_failure:
+                raise _HPOTrialFailure(activity_failure)
             row["state"] = "complete"
             row["objective_value"] = objective_value
             row["validation_metric"] = validation_metric
