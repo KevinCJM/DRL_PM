@@ -1,4 +1,5 @@
 from copy import deepcopy
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -10,8 +11,10 @@ from src.experiments.run_experiment import (
     _activity_hpo_trial_hard_fail_enabled,
     _activity_trial_failure_reason,
     _apply_hpo_final_activity_status,
+    _best_hpo_trial,
     _best_hpo_model_payload,
     _hpo_model_final_comparison,
+    _selected_hpo_report_trials,
 )
 
 
@@ -43,6 +46,22 @@ def test_activity_trial_failures_are_soft_by_default_with_explicit_hard_fail_esc
     config["hpo"]["activity_constraints"]["hard_fail_trials"] = True
 
     assert _activity_hpo_trial_hard_fail_enabled(config) is True
+
+
+def test_hpo_final_selection_prefers_activity_passed_trials():
+    failed_high_value = SimpleNamespace(
+        number=0,
+        value=10.0,
+        params={},
+        user_attrs={"activity_failure_reason": "failed_low_trade_activity"},
+    )
+    passed_low_value = SimpleNamespace(number=1, value=1.0, params={}, user_attrs={})
+
+    best = _best_hpo_trial([failed_high_value, passed_low_value], "maximize")
+    selected = _selected_hpo_report_trials([failed_high_value, passed_low_value], "maximize")
+
+    assert best.number == 1
+    assert selected["best"].number == 1
 
 
 def test_platform_native_scope_matches_native_rl_family_alias():

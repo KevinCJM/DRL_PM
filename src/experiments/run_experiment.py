@@ -928,6 +928,28 @@ def _activity_hpo_trial_hard_fail_enabled(config: Mapping[str, Any]) -> bool:
     return constraints.get("hard_fail_trials") is True
 
 
+def _hpo_trial_activity_failure_reason(trial: Any) -> str:
+    attrs = getattr(trial, "user_attrs", {}) or {}
+    if not isinstance(attrs, Mapping):
+        return ""
+    return _clean_text(attrs.get("activity_failure_reason"))
+
+
+def _activity_passed_hpo_trials(complete_trials: Sequence[Any]) -> list[Any]:
+    trials = list(complete_trials)
+    passed = [trial for trial in trials if not _hpo_trial_activity_failure_reason(trial)]
+    return passed or trials
+
+
+def _best_hpo_trial(complete_trials: Sequence[Any], direction: str) -> Any:
+    selected = _activity_passed_hpo_trials(complete_trials)
+    reverse = str(direction).lower() != "minimize"
+    ordered = sorted(selected, key=lambda trial: float(trial.value), reverse=reverse)
+    if not ordered:
+        raise RuntimeError("ERR_HPO_NO_COMPLETED_TRIAL")
+    return ordered[0]
+
+
 def _safe_float(value: Any, default: float) -> float:
     try:
         result = float(value)
@@ -1098,6 +1120,9 @@ def _run_hpo_single(experiment: HPOExperiment) -> Mapping[str, Any]:
             row.update(_activity_audit_values(trial_result))
             activity_failure = _activity_trial_failure_reason(trial_result, config)
             row["activity_failure_reason"] = activity_failure or ""
+            trial.set_user_attr("activity_failure_reason", activity_failure or "")
+            for key, value in _activity_audit_values(trial_result).items():
+                trial.set_user_attr(str(key), value)
             if activity_failure and _activity_hpo_trial_hard_fail_enabled(config):
                 row["fail_reason"] = activity_failure
                 raise _HPOTrialFailure(activity_failure)
@@ -1131,9 +1156,10 @@ def _run_hpo_single(experiment: HPOExperiment) -> Mapping[str, Any]:
     if not complete_trials:
         raise RuntimeError(f"ERR_HPO_NO_COMPLETED_TRIAL: {study_name}")
 
-    best_trial = study.best_trial
+    activity_passed_trials = _activity_passed_hpo_trials(complete_trials)
+    best_trial = _best_hpo_trial(activity_passed_trials, direction)
     _write_best_trial_config_snapshot(experiment, best_trial, run_dir)
-    final_reports = _run_hpo_final_reports(experiment, complete_trials, direction, final_split)
+    final_reports = _run_hpo_final_reports(experiment, activity_passed_trials, direction, final_split)
     final_result = dict(final_reports["best"]["result"])
     if str(final_result.get("status", "unknown")) != "completed":
         raise RuntimeError(f"ERR_HPO_FINAL_RESULT_NOT_COMPLETED: status={final_result.get('status', 'unknown')}")
@@ -1467,7 +1493,7 @@ def _run_hpo_final_reports(
 
 def _selected_hpo_report_trials(complete_trials: Sequence[Any], direction: str) -> dict[str, Any]:
     reverse = str(direction).lower() != "minimize"
-    ordered = sorted(complete_trials, key=lambda trial: float(trial.value), reverse=reverse)
+    ordered = sorted(_activity_passed_hpo_trials(complete_trials), key=lambda trial: float(trial.value), reverse=reverse)
     if not ordered:
         raise RuntimeError("ERR_HPO_NO_COMPLETED_TRIAL")
     median_index = len(ordered) // 2
