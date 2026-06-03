@@ -3,6 +3,83 @@
   "scope_mode": "subtree_only",
   "routes": [
     {
+      "id": "route_ai_routing_maintenance",
+      "task_type": "ai_routing_memory_maintenance",
+      "match_keywords": [
+        "更新路由",
+        "ai hermes",
+        "self evolve",
+        "self-evolve",
+        "repo_map",
+        "task_routes",
+        "pitfalls",
+        "evolve_ai_routing",
+        "validate_ai_routing",
+        "routing coverage"
+      ],
+      "negative_keywords": [],
+      "route_priority": 1,
+      "first_read_modules": [
+        {
+          "kind": "module",
+          "ref": "ai_routing_governance"
+        }
+      ],
+      "first_read_files": [
+        {
+          "kind": "file",
+          "ref": "docs/repo_map.json"
+        },
+        {
+          "kind": "file",
+          "ref": "docs/task_routes.json"
+        },
+        {
+          "kind": "file",
+          "ref": "docs/pitfalls.json"
+        }
+      ],
+      "then_check_files": [
+        {
+          "kind": "file",
+          "ref": "AGENTS.md"
+        }
+      ],
+      "related_tests": [],
+      "related_configs": [],
+      "pitfall_ids": [],
+      "expand_search_when": [
+        "coverage check reports uncovered_files",
+        "a new hidden contract or recurring pitfall is found"
+      ],
+      "stop_and_verify_when": [
+        "routing-only checks fail",
+        "stable references are not git tracked"
+      ],
+      "fact_check": [
+        "confirm facts from current code, tests, configs, or command output before editing routing memory",
+        "do not promote external behavior or unverified assumptions"
+      ],
+      "minimum_regression": [
+        {
+          "kind": "command",
+          "ref": "python3 -m json.tool docs/repo_map.json"
+        },
+        {
+          "kind": "command",
+          "ref": "python3 -m json.tool docs/task_routes.json"
+        },
+        {
+          "kind": "command",
+          "ref": "python3 -m json.tool docs/pitfalls.json"
+        }
+      ],
+      "scope_notes": [
+        "business code is out_of_scope for routing-only maintenance"
+      ],
+      "notes": []
+    },
+    {
       "id": "route_partial_rebalance_model",
       "task_type": "partial_rebalance_model_change",
       "match_keywords": [
@@ -11,6 +88,10 @@
         "rebalance intensity",
         "gate",
         "rho",
+        "raw gate",
+        "raw rho",
+        "final action",
+        "raw_model_requested_rebalance",
         "hybrid_dqn_beta",
         "continuous_beta",
         "discrete_dqn",
@@ -69,7 +150,8 @@
       ],
       "pitfall_ids": [
         "P02",
-        "P06"
+        "P06",
+        "P07"
       ],
       "expand_search_when": [
         "gate outputs feed agent-specific wrappers",
@@ -185,7 +267,8 @@
         "P01",
         "P02",
         "P03",
-        "P04"
+        "P04",
+        "P07"
       ],
       "expand_search_when": [
         "delayed_action_execution branch is touched",
@@ -319,6 +402,9 @@
         "checkpoint",
         "device",
         "ppo_agent",
+        "raw_model_requested_rebalance",
+        "raw_rho",
+        "final_action",
         "dqn_agent",
         "hybrid_agent",
         "preference_agent",
@@ -389,7 +475,8 @@
       ],
       "pitfall_ids": [
         "P02",
-        "P06"
+        "P06",
+        "P07"
       ],
       "expand_search_when": [
         "checkpoint payload or agent factory names change",
@@ -425,6 +512,15 @@
         "equal weight",
         "eiie",
         "buy and hold",
+        "rebalance gate",
+        "raw gate",
+        "raw rho",
+        "final action",
+        "turnover threshold",
+        "dqn_only",
+        "bernoulli_gated_ppo",
+        "native_dqn_template",
+        "gt_rcpo_lite",
         "baseline output schema"
       ],
       "negative_keywords": [
@@ -451,6 +547,30 @@
         },
         {
           "kind": "file",
+          "ref": "src/baselines/eiie.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/bernoulli_gated_ppo.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/dqn_only.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/native_bernoulli_gated_ppo.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/native_dqn_template.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/gt_rcpo_lite.py"
+        },
+        {
+          "kind": "file",
           "ref": "src/baselines/risk_evaluation.py"
         },
         {
@@ -466,6 +586,10 @@
         {
           "kind": "file",
           "ref": "tests/test_baseline_output_schema.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_p12_p13_new_models.py"
         }
       ],
       "related_configs": [
@@ -480,19 +604,23 @@
       ],
       "pitfall_ids": [
         "P02",
-        "P04"
+        "P04",
+        "P07"
       ],
       "expand_search_when": [
         "changing baseline registry or experiment integration",
-        "changing artifact column names or metrics keys"
+        "changing artifact column names or metrics keys",
+        "changing raw versus final rebalance action semantics"
       ],
       "stop_and_verify_when": [
         "PortfolioAction schema changes",
-        "baseline output column set changes"
+        "baseline output column set changes",
+        "gate_action, raw_action, raw_rho, or final_action semantics change"
       ],
       "fact_check": [
         "confirm strategy compute_target_weights contract before interface edits",
-        "confirm schema parity against backtest output columns"
+        "confirm schema parity against backtest output columns",
+        "confirm raw model intent is preserved separately from scheduler or threshold final execution action"
       ],
       "minimum_regression": [
         {

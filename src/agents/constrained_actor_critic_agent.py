@@ -38,6 +38,11 @@ class ConstrainedActorCriticConfig:
     entropy_coef: float = 1.0e-3
     critic_coef: float = 0.20
     cost_rate: float = 0.001
+    rho_policy_mode: str = "score_rho_normalized"
+    rho_tau_start: float = 1.0
+    rho_tau_end: float = 0.20
+    rho_tau_decay_steps: int = 2048
+    rho_min_entropy_threshold: float = 0.05
     budget: ConstraintBudget = ConstraintBudget()
     multipliers: ConstraintMultipliers = ConstraintMultipliers()
 
@@ -58,6 +63,7 @@ class ConstrainedActorCriticAgent:
             lr=float(config.learning_rate),
             weight_decay=float(config.weight_decay),
         )
+        self._update_step = 0
 
     def train_offline(
         self,
@@ -72,10 +78,12 @@ class ConstrainedActorCriticAgent:
             epoch_losses: list[float] = []
             epoch_rewards: list[float] = []
             updates_this_epoch = 0
+            last_stats: dict[str, float] = {}
             for mini_slice in _iter_minibatches(batch, self.config.batch_size):
                 if max_updates is not None and updates_this_epoch >= int(max_updates):
                     break
                 stats = self._update_batch(batch, mini_slice)
+                last_stats = stats
                 gradient_updates += 1
                 updates_this_epoch += 1
                 env_steps += int(stats["sample_count"])
@@ -91,6 +99,8 @@ class ConstrainedActorCriticAgent:
                     "train_reward": float(np.mean(epoch_rewards)) if epoch_rewards else np.nan,
                     "validation_metric": float(validation_metric),
                     "loss": float(np.mean(epoch_losses)) if epoch_losses else np.nan,
+                    "rho_entropy": float(last_stats.get("rho_entropy", np.nan)) if epoch_losses else np.nan,
+                    "rho_temperature": float(last_stats.get("rho_temperature", np.nan)) if epoch_losses else np.nan,
                     "status": "completed" if updates_this_epoch > 0 else "skipped_no_batch",
                 }
             )
@@ -118,6 +128,14 @@ class ConstrainedActorCriticAgent:
         candidate = output.candidate_weights.squeeze(0).detach().cpu().numpy()
         return {
             "candidate_weights": candidate,
+            "raw_rho": float(output.rho.squeeze(0).detach().cpu()),
+            "rho": float(output.rho.squeeze(0).detach().cpu()),
+            "rho_action_index": int(output.rho_action_index.squeeze(0).detach().cpu()),
+            "rho_probs": output.rho_probs.squeeze(0).detach().cpu().numpy().tolist(),
+            "rho_logits": output.rho_logits.squeeze(0).detach().cpu().numpy().tolist(),
+            "rho_entropy": float(output.rho_entropy.squeeze(0).detach().cpu()),
+            "rho_expected": float(output.rho_expected.squeeze(0).detach().cpu()),
+            "rho_policy_mode": str(self.config.rho_policy_mode),
             "value_return": float(output.value_return.squeeze(0).detach().cpu()),
             "value_cost": float(output.value_cost.squeeze(0).detach().cpu()),
             "value_drawdown": float(output.value_drawdown.squeeze(0).detach().cpu()),
@@ -130,7 +148,8 @@ class ConstrainedActorCriticAgent:
     def evaluate(self, batch: Any) -> float:
         self.model.eval()
         output = self.model(batch.market_image, batch.current_weights, batch.availability_mask)
-        metrics = self._portfolio_metrics(output.candidate_weights, batch.current_weights, batch.future_returns)
+        rho = output.rho if _uses_learned_rho(self.config.rho_policy_mode) else None
+        metrics = self._portfolio_metrics(output.candidate_weights, batch.current_weights, batch.future_returns, rho=rho)
         return float(metrics["objective"].mean().detach().cpu())
 
     def _update_batch(self, batch: Any, mini_slice: slice) -> dict[str, float]:
@@ -140,8 +159,11 @@ class ConstrainedActorCriticAgent:
         mask = batch.availability_mask[mini_slice]
         future_returns = batch.future_returns[mini_slice]
         output = self.model(market_image, current, mask)
-        metrics = self._portfolio_metrics(output.candidate_weights, current, future_returns)
+        rho, rho_entropy, tau = self._rho_for_training(output)
+        metrics = self._portfolio_metrics(output.candidate_weights, current, future_returns, rho=rho)
         entropy = _portfolio_entropy(output.candidate_weights, mask).mean()
+        if _uses_learned_rho(self.config.rho_policy_mode):
+            entropy = entropy + rho_entropy.mean()
         critic_loss = (
             F.mse_loss(output.value_return, metrics["portfolio_return"].detach())
             + F.mse_loss(output.value_cost, metrics["estimated_cost"].detach())
@@ -154,20 +176,39 @@ class ConstrainedActorCriticAgent:
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
         self.optimizer.step()
+        self._update_step += 1
         return {
             "loss": float(loss.detach().cpu()),
             "objective": float(metrics["objective"].mean().detach().cpu()),
             "sample_count": float(market_image.shape[0]),
+            "rho_entropy": float(rho_entropy.mean().detach().cpu()),
+            "rho_temperature": float(tau),
         }
+
+    def _rho_for_training(self, output: Any) -> tuple[torch.Tensor | None, torch.Tensor, float]:
+        if not _uses_learned_rho(self.config.rho_policy_mode):
+            return None, torch.zeros_like(output.value_return), float("nan")
+        tau = _rho_temperature(self.config, self._update_step)
+        rho_one_hot = F.gumbel_softmax(output.rho_logits, tau=tau, hard=True, dim=-1)
+        rho_values = self.model.rho_values.to(device=output.rho_logits.device, dtype=output.rho_logits.dtype)
+        rho = (rho_one_hot * rho_values.unsqueeze(0)).sum(dim=-1)
+        return rho, output.rho_entropy, tau
 
     def _portfolio_metrics(
         self,
         candidate: torch.Tensor,
         current: torch.Tensor,
         future_returns: torch.Tensor,
+        *,
+        rho: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
-        portfolio_return = (candidate * future_returns).sum(dim=-1)
-        turnover = 0.5 * torch.abs(candidate - current).sum(dim=-1)
+        if rho is None:
+            executed = candidate
+        else:
+            rho_view = rho.reshape(-1, 1).to(dtype=candidate.dtype, device=candidate.device)
+            executed = current + rho_view * (candidate - current)
+        portfolio_return = (executed * future_returns).sum(dim=-1)
+        turnover = 0.5 * torch.abs(executed - current).sum(dim=-1)
         estimated_cost = turnover * float(self.config.cost_rate)
         cvar_loss = torch.relu(-portfolio_return)
         drawdown_loss = torch.relu(-portfolio_return)
@@ -199,6 +240,7 @@ def agent_config_from_mapping(config: Mapping[str, Any], *, section: Mapping[str
     training = _mapping(config.get("training"))
     optimizer = _mapping(config.get("optimizer"))
     cost_model = _mapping(config.get("cost_model"))
+    rho_temperature = _mapping(section.get("rho_temperature"))
     cost_rate = float(cost_model.get("proportional_cost", 0.0) or 0.0) + float(cost_model.get("slippage", 0.0) or 0.0)
     return ConstrainedActorCriticConfig(
         learning_rate=float(section.get("learning_rate", optimizer.get("learning_rate", 3.0e-4))),
@@ -209,6 +251,11 @@ def agent_config_from_mapping(config: Mapping[str, Any], *, section: Mapping[str
         entropy_coef=float(section.get("entropy_coef", 1.0e-3)),
         critic_coef=float(section.get("critic_coef", 0.20)),
         cost_rate=cost_rate,
+        rho_policy_mode=str(section.get("rho_policy", "score_rho_normalized")),
+        rho_tau_start=float(rho_temperature.get("tau_start", 1.0)),
+        rho_tau_end=float(rho_temperature.get("tau_end", 0.20)),
+        rho_tau_decay_steps=max(1, int(rho_temperature.get("tau_decay_steps", 2048))),
+        rho_min_entropy_threshold=float(rho_temperature.get("min_entropy_threshold", 0.05)),
         budget=ConstraintBudget(
             average_turnover_per_step=float(section.get("average_turnover_per_step_budget", 0.20)),
             average_cost_per_step=float(section.get("average_cost_per_step_budget", 0.001)),
@@ -255,6 +302,15 @@ def _optional_int(value: Any) -> int | None:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _uses_learned_rho(mode: str) -> bool:
+    return str(mode) in {"learned", "straight_through_gumbel_softmax_v1"}
+
+
+def _rho_temperature(config: ConstrainedActorCriticConfig, step: int) -> float:
+    tau = float(config.rho_tau_start) * float(np.exp(-float(step) / float(max(1, config.rho_tau_decay_steps))))
+    return float(max(float(config.rho_tau_end), tau))
 
 
 __all__ = [

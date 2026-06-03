@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import yaml
 
 from src.config import ConfigLoader, PROJECT_ROOT
 from src.utils.logger import save_json_atomic
@@ -16,6 +17,14 @@ from src.utils.logger import save_json_atomic
 
 PROTOCOL_ID = "core13_v2_full_reset_20260522"
 DATA_CUTOFF_DATE = "2026-05-20"
+ACTIVE_FORMAL_PHASES = {"p7", "p9", "p12", "p13", "p16"}
+ACTIVE_ACTIVITY_PROTOCOL = "daily_gate_with_cost_constraint"
+ACTIVE_HPO_OBJECTIVE = "validation_return_risk_cost_constrained"
+ACTIVE_RHO_POLICIES = {"learned", "straight_through_gumbel_softmax_v1"}
+ACTIVE_CONFIG_EXEMPTIONS = {"p16_p1_fixed_deterministic_formal_export.yaml"}
+P16_FORMAL_MIN_EPOCHS = 8
+P16_FORMAL_MIN_VALIDATION_STEPS = 512
+P16_FORMAL_MIN_UPDATES_PER_EPOCH = 64
 REQUIRED_CONFIGS = (
     "configs/paper/p0_main_native_baseline_smoke.yaml",
     "configs/paper/hpo_equal_budget_main_native_pilot.yaml",
@@ -73,6 +82,7 @@ P16_MODEL_EXTENSION_ID = "core13_v2_p16_ra_gt_rcpo_20260525"
 P16_FINAL_RUN_PREFIXES = ("EXP35_P16_formal_ra_gt_rcpo",)
 P16_PRIMARY_MODEL_ID = "risk_aware_graph_transformer_constrained_actor_critic"
 P16_DETERMINISTIC_BASELINES = ("risk_parity", "buy_and_hold", "equal_weight")
+P1_MAIN_HPO_RUN_PREFIX = "EXP11_P1_hpo_final_main_native_from_hpo"
 SEEDS = (42, 123, 2024, 3407, 9999)
 
 
@@ -186,12 +196,130 @@ def _audit_configs(root: Path, protocol_id: str, data_cutoff_date: str) -> list[
             except Exception as exc:  # noqa: BLE001
                 detail = str(exc)
         rows.append(_check("p-1", f"config_ready:{Path(relative).name}", path, exists and load_ok, detail=detail))
+    rows.extend(_audit_all_paper_configs_active(root))
     rows.extend(_audit_hpo_config(root / "configs/paper/hpo_equal_budget_main_native_seed_runner.yaml", "p7"))
     rows.extend(_audit_hpo_config(root / "configs/paper/hpo_equal_budget_related_work_seed_runner.yaml", "p9"))
     rows.extend(_audit_hpo_config(root / "configs/paper/p12_cage_eiie_formal_seed_runner.yaml", "p12"))
     rows.extend(_audit_hpo_config(root / "configs/paper/p13_gt_rcpo_lite_formal_seed_runner.yaml", "p13"))
     rows.extend(_audit_hpo_config(root / "configs/paper/p16_ra_gt_rcpo_formal_seed_runner.yaml", "p16"))
     return rows
+
+
+def _audit_all_paper_configs_active(root: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for path in sorted((root / "configs/paper").glob("*.yaml")):
+        if path.name.startswith("._") or path.name in ACTIVE_CONFIG_EXEMPTIONS:
+            continue
+        try:
+            config = ConfigLoader.load(path)
+        except Exception as exc:  # noqa: BLE001
+            rows.append(_check("p-1", f"active_config_load:{path.name}", path, False, detail=str(exc)))
+            continue
+        rows.extend(_audit_active_protocol_config(config, path, phase=_phase_from_config_name(path.name)))
+    return rows
+
+
+def _phase_from_config_name(name: str) -> str:
+    lowered = name.lower()
+    for phase in ("p16", "p13", "p12", "p9", "p8", "p7", "p6", "p5", "p4", "p3", "p2", "p1", "p0"):
+        if lowered.startswith(phase) or f"_{phase}_" in lowered:
+            return phase
+    if "related_work" in lowered:
+        return "p9"
+    if "hpo_equal_budget_main_native" in lowered:
+        return "p7"
+    return "p-1"
+
+
+def _audit_active_protocol_config(config: Mapping[str, Any], path: Path, *, phase: str) -> list[dict[str, Any]]:
+    activity = _get(config, "execution_activity") or {}
+    hpo = _get(config, "hpo") or {}
+    experiment_type = _get(config, "experiment", "type")
+    rows = [
+        _check(
+            phase,
+            f"active_config_rebalance_daily:{path.name}",
+            path,
+            _get(config, "rebalance", "mode") == "daily",
+            detail=f"rebalance.mode={_get(config, 'rebalance', 'mode')}",
+        ),
+        _check(
+            phase,
+            f"active_config_execution_activity:{path.name}",
+            path,
+            activity.get("protocol") == ACTIVE_ACTIVITY_PROTOCOL
+            and activity.get("scheduler_blocks_model_actions") is False
+            and activity.get("activity_gate_enforced") is True
+            and activity.get("turnover_optimization_protocol_id") == "turnover_active_v1",
+            detail=json.dumps(
+                {
+                    "protocol": activity.get("protocol"),
+                    "scheduler_blocks_model_actions": activity.get("scheduler_blocks_model_actions"),
+                    "activity_gate_enforced": activity.get("activity_gate_enforced"),
+                    "turnover_optimization_protocol_id": activity.get("turnover_optimization_protocol_id"),
+                },
+                ensure_ascii=False,
+            ),
+        ),
+    ]
+    if hpo.get("enabled") is True or experiment_type == "hyperparameter_sweep":
+        rows.extend(_audit_active_hpo_objective_and_constraints(config, path, phase))
+    if "p12" in path.name.lower() or bool(_get(config, "cage_eiie", "enabled")):
+        rows.append(
+            _check(
+                phase,
+                f"active_config_p12_gate_scoring_normalized:{path.name}",
+                path,
+                _get(config, "cage_eiie", "gate_scoring", "mode") == "normalized",
+                detail=f"mode={_get(config, 'cage_eiie', 'gate_scoring', 'mode')}",
+            )
+        )
+    if "p16" in path.name.lower() or bool(_get(config, "ra_gt_rcpo", "enabled")):
+        rows.append(
+            _check(
+                phase,
+                f"active_config_p16_rho_policy:{path.name}",
+                path,
+                str(_get(config, "ra_gt_rcpo", "rho_policy")) in ACTIVE_RHO_POLICIES,
+                detail=f"rho_policy={_get(config, 'ra_gt_rcpo', 'rho_policy')}",
+            )
+        )
+    return rows
+
+
+def _audit_active_hpo_objective_and_constraints(config: Mapping[str, Any], path: Path, phase: str) -> list[dict[str, Any]]:
+    hpo = _get(config, "hpo") or {}
+    constraints = _get(config, "hpo", "activity_constraints") or {}
+    scope_protocols = {str(item) for item in constraints.get("scope_activity_protocols", [])}
+    return [
+        _check(
+            phase,
+            f"active_config_hpo_objective:{path.name}",
+            path,
+            hpo.get("metric") == ACTIVE_HPO_OBJECTIVE and hpo.get("objective") == ACTIVE_HPO_OBJECTIVE,
+            detail=f"metric={hpo.get('metric')}, objective={hpo.get('objective')}",
+        ),
+        _check(
+            phase,
+            f"active_config_hpo_activity_constraints:{path.name}",
+            path,
+            constraints.get("enabled") is True
+            and scope_protocols == {ACTIVE_ACTIVITY_PROTOCOL}
+            and float(constraints.get("min_model_rebalance_hit_rate") or 0.0) >= 0.05
+            and float(constraints.get("min_non_initial_turnover_per_opportunity") or 0.0) >= 0.002,
+            detail=json.dumps(
+                {
+                    "enabled": constraints.get("enabled"),
+                    "scope_activity_protocols": sorted(scope_protocols),
+                    "min_model_rebalance_hit_rate": constraints.get("min_model_rebalance_hit_rate"),
+                    "min_non_initial_turnover_per_opportunity": constraints.get(
+                        "min_non_initial_turnover_per_opportunity"
+                    ),
+                },
+                ensure_ascii=False,
+            ),
+        ),
+    ]
 
 
 def _audit_hpo_config(path: Path, phase: str) -> list[dict[str, Any]]:
@@ -229,7 +357,149 @@ def _audit_hpo_config(path: Path, phase: str) -> list[dict[str, Any]]:
             detail=f"n_trials_per_model={_get(config, 'hpo', 'n_trials_per_model')}",
         )
     )
+    if phase in ACTIVE_FORMAL_PHASES:
+        rows.extend(_audit_active_formal_hpo_config(config, path, phase))
     return rows
+
+
+def _audit_active_formal_hpo_config(config: Mapping[str, Any], path: Path, phase: str) -> list[dict[str, Any]]:
+    activity = _get(config, "execution_activity") or {}
+    hpo = _get(config, "hpo") or {}
+    constraints = _get(config, "hpo", "activity_constraints") or {}
+    scope_protocols = {str(item) for item in constraints.get("scope_activity_protocols", [])}
+    rows = [
+        _check(
+            phase,
+            f"active_rebalance_daily:{path.name}",
+            path,
+            _get(config, "rebalance", "mode") == "daily",
+            detail=f"rebalance.mode={_get(config, 'rebalance', 'mode')}",
+        ),
+        _check(
+            phase,
+            f"active_execution_activity:{path.name}",
+            path,
+            activity.get("protocol") == ACTIVE_ACTIVITY_PROTOCOL
+            and activity.get("scheduler_blocks_model_actions") is False
+            and activity.get("activity_gate_enforced") is True
+            and activity.get("turnover_optimization_protocol_id") == "turnover_active_v1",
+            detail=json.dumps(
+                {
+                    "protocol": activity.get("protocol"),
+                    "scheduler_blocks_model_actions": activity.get("scheduler_blocks_model_actions"),
+                    "activity_gate_enforced": activity.get("activity_gate_enforced"),
+                    "turnover_optimization_protocol_id": activity.get("turnover_optimization_protocol_id"),
+                },
+                ensure_ascii=False,
+            ),
+        ),
+        _check(
+            phase,
+            f"active_hpo_objective:{path.name}",
+            path,
+            hpo.get("metric") == ACTIVE_HPO_OBJECTIVE and hpo.get("objective") == ACTIVE_HPO_OBJECTIVE,
+            detail=f"metric={hpo.get('metric')}, objective={hpo.get('objective')}",
+        ),
+        _check(
+            phase,
+            f"active_activity_constraints:{path.name}",
+            path,
+            constraints.get("enabled") is True
+            and scope_protocols == {ACTIVE_ACTIVITY_PROTOCOL}
+            and float(constraints.get("min_model_rebalance_hit_rate") or 0.0) >= 0.05
+            and float(constraints.get("min_non_initial_turnover_per_opportunity") or 0.0) >= 0.002,
+            detail=json.dumps(
+                {
+                    "enabled": constraints.get("enabled"),
+                    "scope_activity_protocols": sorted(scope_protocols),
+                    "min_model_rebalance_hit_rate": constraints.get("min_model_rebalance_hit_rate"),
+                    "min_non_initial_turnover_per_opportunity": constraints.get(
+                        "min_non_initial_turnover_per_opportunity"
+                    ),
+                },
+                ensure_ascii=False,
+            ),
+        ),
+    ]
+    if phase == "p12":
+        rows.append(
+            _check(
+                phase,
+                f"p12_gate_scoring_normalized:{path.name}",
+                path,
+                _get(config, "cage_eiie", "gate_scoring", "mode") == "normalized",
+                detail=f"mode={_get(config, 'cage_eiie', 'gate_scoring', 'mode')}",
+            )
+        )
+    if phase == "p16":
+        rows.append(
+            _check(
+                phase,
+                f"p16_learned_rho_policy:{path.name}",
+                path,
+                str(_get(config, "ra_gt_rcpo", "rho_policy")) in ACTIVE_RHO_POLICIES,
+                detail=f"rho_policy={_get(config, 'ra_gt_rcpo', 'rho_policy')}",
+            )
+        )
+        budget = _p16_effective_training_budget(config)
+        rows.append(
+            _check(
+                phase,
+                f"p16_effective_training_budget:{path.name}",
+                path,
+                budget["epochs"] >= P16_FORMAL_MIN_EPOCHS
+                and budget["train_steps"] >= budget["min_env_steps"]
+                and budget["validation_steps"] >= P16_FORMAL_MIN_VALIDATION_STEPS
+                and budget["effective_updates_per_epoch"] >= P16_FORMAL_MIN_UPDATES_PER_EPOCH
+                and budget["estimated_gradient_updates"] >= budget["min_gradient_updates"]
+                and budget["estimated_env_steps"] >= budget["min_env_steps"],
+                detail=json.dumps(budget, ensure_ascii=False, sort_keys=True),
+            )
+        )
+    return rows
+
+
+def _p16_effective_training_budget(config: Mapping[str, Any]) -> dict[str, int | None]:
+    native = _get(config, "baselines", "native_rl") or {}
+    training = _get(config, "training") or {}
+    section = _get(config, "ra_gt_rcpo") or {}
+    epochs = max(1, _int_or_default(native.get("epochs", training.get("epochs")), 1))
+    train_steps = _int_or_default(native.get("max_train_steps") or training.get("max_train_steps"), 0)
+    validation_steps = _int_or_default(native.get("max_validation_steps") or training.get("max_validation_steps"), 0)
+    batch_size = max(1, _int_or_default(section.get("batch_size", training.get("batch_size")), 32))
+    raw_updates_per_epoch = native.get("max_gradient_updates_per_epoch", training.get("max_gradient_updates_per_epoch"))
+    configured_updates_per_epoch = None if raw_updates_per_epoch is None else max(0, _int_or_default(raw_updates_per_epoch, 0))
+    batches_per_epoch = 0 if train_steps <= 0 else int((train_steps + batch_size - 1) // batch_size)
+    effective_updates_per_epoch = (
+        batches_per_epoch
+        if configured_updates_per_epoch is None
+        else int(min(configured_updates_per_epoch, batches_per_epoch))
+    )
+    estimated_gradient_updates = int(epochs * effective_updates_per_epoch)
+    estimated_env_steps_per_epoch = int(min(train_steps, effective_updates_per_epoch * batch_size))
+    estimated_env_steps = int(epochs * estimated_env_steps_per_epoch)
+    return {
+        "epochs": int(epochs),
+        "train_steps": int(train_steps),
+        "validation_steps": int(validation_steps),
+        "batch_size": int(batch_size),
+        "configured_updates_per_epoch": configured_updates_per_epoch,
+        "batches_per_epoch": int(batches_per_epoch),
+        "effective_updates_per_epoch": int(effective_updates_per_epoch),
+        "estimated_gradient_updates": int(estimated_gradient_updates),
+        "estimated_env_steps": int(estimated_env_steps),
+        "min_gradient_updates": _int_or_default(section.get("min_gradient_updates_for_formal"), 128),
+        "min_env_steps": _int_or_default(section.get("min_env_steps_for_formal"), 2048),
+    }
+
+
+def _int_or_default(value: Any, default: int) -> int:
+    try:
+        if value is None or pd.isna(value):
+            return int(default)
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
 
 
 def _audit_p12_p13_validation_gate(root: Path) -> list[dict[str, Any]]:
@@ -259,6 +529,7 @@ def _audit_p12_p13_validation_gate(root: Path) -> list[dict[str, Any]]:
         and p12_rows["promotion_gate_passed"].map(_truthy).any()
     )
     p13_decided = not p13_rows.empty and "promotion_gate_passed" in p13_rows.columns
+    p13_declared_skipped = promotion_manifest.get("p13_evaluated") is False and p13_rows.empty
     return [
         _check(
             "p12_p13",
@@ -310,14 +581,16 @@ def _audit_p12_p13_validation_gate(root: Path) -> list[dict[str, Any]]:
         ),
         _check(
             "p13",
-            "p13_promotion_gate_decided",
+            "p13_promotion_gate_decided_or_skipped",
             promotion_report,
-            p13_decided
+            (p13_decided or p13_declared_skipped)
             and promotion_manifest.get("selection_split") == "validation"
             and promotion_manifest.get("test_used_for_model_selection") is False,
             detail=json.dumps(
                 {
                     "p13_decided": p13_decided,
+                    "p13_evaluated": promotion_manifest.get("p13_evaluated"),
+                    "p13_declared_skipped": p13_declared_skipped,
                     "p13_formal_required": _p13_formal_required(root),
                     "selection_split": promotion_manifest.get("selection_split"),
                     "test_used_for_model_selection": promotion_manifest.get("test_used_for_model_selection"),
@@ -591,7 +864,7 @@ def _audit_p16_formal_runs(root: Path) -> list[dict[str, Any]]:
     for prefix in P16_FINAL_RUN_PREFIXES:
         for seed in SEEDS:
             run_dir = root / "results" / f"{prefix}_s{seed}"
-            manifest = _read_json(run_dir / "logs/run_manifest.json")
+            manifest = _read_run_manifest(run_dir)
             rows.append(
                 _check(
                     "p16",
@@ -601,14 +874,21 @@ def _audit_p16_formal_runs(root: Path) -> list[dict[str, Any]]:
                     and manifest.get("model_extension_id") == P16_MODEL_EXTENSION_ID
                     and manifest.get("diagnostic_status") == "formal"
                     and manifest.get("rankable_in_unified_table") is True
+                    and _manifest_uses_active_protocol(manifest)
                     and (run_dir / "metrics/hpo_model_final_comparison.csv").exists()
                     and (run_dir / "logs/hpo_search_space_manifest.csv").exists(),
-                    detail=json.dumps(
+                detail=json.dumps(
                         {
                             "manifest": bool(manifest),
                             "model_extension_id": manifest.get("model_extension_id"),
                             "diagnostic_status": manifest.get("diagnostic_status"),
                             "rankable": manifest.get("rankable_in_unified_table"),
+                            "rebalance_mode": manifest.get("rebalance_mode"),
+                            "execution_activity_protocol": manifest.get("execution_activity_protocol"),
+                            "scheduler_blocks_model_actions": manifest.get("scheduler_blocks_model_actions"),
+                            "activity_gate_enforced": manifest.get("activity_gate_enforced"),
+                            "hpo_metric": manifest.get("hpo_metric"),
+                            "hpo_objective": manifest.get("hpo_objective"),
                         },
                         ensure_ascii=False,
                     ),
@@ -650,7 +930,7 @@ def _audit_formal_seed_runs(root: Path, protocol_id: str) -> list[dict[str, Any]
     for prefix in prefixes:
         for seed in SEEDS:
             run_dir = root / "results" / f"{prefix}_s{seed}"
-            manifest = _read_json(run_dir / "logs/run_manifest.json")
+            manifest = _read_run_manifest(run_dir)
             comparison = run_dir / "metrics/hpo_model_final_comparison.csv"
             returns = run_dir / "metrics/hpo_model_final_daily_returns.csv"
             search_space = run_dir / "logs/hpo_search_space_manifest.csv"
@@ -663,6 +943,7 @@ def _audit_formal_seed_runs(root: Path, protocol_id: str) -> list[dict[str, Any]
                     and manifest.get("protocol_id") == protocol_id
                     and manifest.get("diagnostic_status") == "formal"
                     and manifest.get("rankable_in_unified_table") is True
+                    and _manifest_uses_active_protocol(manifest)
                     and comparison.exists()
                     and returns.exists()
                     and search_space.exists(),
@@ -671,6 +952,12 @@ def _audit_formal_seed_runs(root: Path, protocol_id: str) -> list[dict[str, Any]
                             "manifest": bool(manifest),
                             "diagnostic_status": manifest.get("diagnostic_status"),
                             "rankable": manifest.get("rankable_in_unified_table"),
+                            "rebalance_mode": manifest.get("rebalance_mode"),
+                            "execution_activity_protocol": manifest.get("execution_activity_protocol"),
+                            "scheduler_blocks_model_actions": manifest.get("scheduler_blocks_model_actions"),
+                            "activity_gate_enforced": manifest.get("activity_gate_enforced"),
+                            "hpo_metric": manifest.get("hpo_metric"),
+                            "hpo_objective": manifest.get("hpo_objective"),
                             "comparison": comparison.exists(),
                             "returns": returns.exists(),
                             "search_space": search_space.exists(),
@@ -692,6 +979,19 @@ def _formal_prefix_phase(prefix: str) -> str:
     if "P13" in prefix:
         return "p13"
     return "formal"
+
+
+def _manifest_uses_active_protocol(manifest: Mapping[str, Any]) -> bool:
+    return (
+        manifest.get("rebalance_mode") == "daily"
+        and manifest.get("execution_activity_protocol") == ACTIVE_ACTIVITY_PROTOCOL
+        and manifest.get("turnover_optimization_protocol_id") == "turnover_active_v1"
+        and manifest.get("scheduler_blocks_model_actions") is False
+        and manifest.get("activity_gate_enforced") is True
+        and manifest.get("hpo_metric") == ACTIVE_HPO_OBJECTIVE
+        and manifest.get("hpo_objective") == ACTIVE_HPO_OBJECTIVE
+        and manifest.get("hpo_activity_constraints_enabled") is True
+    )
 
 
 def _audit_paper_tables(root: Path, protocol_id: str, data_cutoff_date: str) -> list[dict[str, Any]]:
@@ -746,6 +1046,28 @@ def _audit_paper_tables(root: Path, protocol_id: str, data_cutoff_date: str) -> 
                 ),
             )
         )
+        if group == "main_hpo_5seed":
+            frame = _read_csv(main)
+            rows.append(
+                _check(
+                    "aggregation",
+                    "formal_paper_table_group:main_hpo_5seed_requires_p1_from_hpo_sources",
+                    main,
+                    _main_hpo_5seed_sources_valid(frame),
+                    detail=json.dumps(_main_hpo_5seed_source_detail(frame), ensure_ascii=False),
+                )
+            )
+        if group == "main_hpo_plus_p9":
+            frame = _read_csv(main)
+            rows.append(
+                _check(
+                    "aggregation",
+                    "formal_paper_table_group:main_hpo_plus_p9_requires_p1_and_p9_sources",
+                    main,
+                    _main_hpo_plus_p9_sources_valid(frame),
+                    detail=json.dumps(_main_hpo_plus_p9_source_detail(frame), ensure_ascii=False),
+                )
+            )
     for group in DIAGNOSTIC_PAPER_TABLE_GROUPS:
         group_dir = root / "results/paper_tables" / group
         manifest = _read_json(group_dir / "paper_aggregate_manifest.json")
@@ -790,6 +1112,84 @@ def _formal_filter_matches(formal_filter: Mapping[str, Any], protocol_id: str, d
         and formal_filter.get("require_formal_manifest") is True
         and formal_filter.get("require_availability_mask_contract") is True
     )
+
+
+def _main_hpo_5seed_sources_valid(frame: pd.DataFrame) -> bool:
+    detail = _main_hpo_5seed_source_detail(frame)
+    return bool(
+        detail["expected_source_runs_matched"]
+        and detail["source_files"] == ["baseline_comparison.csv"]
+    )
+
+
+def _main_hpo_5seed_source_detail(frame: pd.DataFrame) -> dict[str, Any]:
+    expected = {f"{P1_MAIN_HPO_RUN_PREFIX}_s{seed}" for seed in SEEDS}
+    if frame.empty:
+        return {
+            "rows": 0,
+            "expected_source_runs": sorted(expected),
+            "actual_source_runs": [],
+            "source_files": [],
+            "expected_source_runs_matched": False,
+        }
+    actual = (
+        set(frame["source_run"].dropna().astype(str).unique())
+        if "source_run" in frame.columns
+        else set()
+    )
+    source_files = (
+        sorted(frame["source_file"].dropna().astype(str).unique())
+        if "source_file" in frame.columns
+        else []
+    )
+    return {
+        "rows": int(len(frame)),
+        "expected_source_runs": sorted(expected),
+        "actual_source_runs": sorted(actual),
+        "source_files": source_files,
+        "expected_source_runs_matched": actual == expected,
+    }
+
+
+def _main_hpo_plus_p9_sources_valid(frame: pd.DataFrame) -> bool:
+    detail = _main_hpo_plus_p9_source_detail(frame)
+    return bool(
+        detail["expected_source_runs_matched"]
+        and detail["source_files"] == ["baseline_comparison.csv", "hpo_model_final_comparison.csv"]
+    )
+
+
+def _main_hpo_plus_p9_source_detail(frame: pd.DataFrame) -> dict[str, Any]:
+    expected_p1 = {f"{P1_MAIN_HPO_RUN_PREFIX}_s{seed}" for seed in SEEDS}
+    expected_p9 = {f"EXP09_P9_formal_hpo_related_work_s{seed}" for seed in SEEDS}
+    expected = expected_p1 | expected_p9
+    if frame.empty:
+        return {
+            "rows": 0,
+            "expected_p1_source_runs": sorted(expected_p1),
+            "expected_p9_source_runs": sorted(expected_p9),
+            "actual_source_runs": [],
+            "source_files": [],
+            "expected_source_runs_matched": False,
+        }
+    actual = (
+        set(frame["source_run"].dropna().astype(str).unique())
+        if "source_run" in frame.columns
+        else set()
+    )
+    source_files = (
+        sorted(frame["source_file"].dropna().astype(str).unique())
+        if "source_file" in frame.columns
+        else []
+    )
+    return {
+        "rows": int(len(frame)),
+        "expected_p1_source_runs": sorted(expected_p1),
+        "expected_p9_source_runs": sorted(expected_p9),
+        "actual_source_runs": sorted(actual),
+        "source_files": source_files,
+        "expected_source_runs_matched": actual == expected,
+    }
 
 
 def _audit_artifact_bundle(root: Path, protocol_id: str, data_cutoff_date: str) -> list[dict[str, Any]]:
@@ -919,11 +1319,51 @@ def _get(mapping: Mapping[str, Any], *keys: str) -> Any:
     return current
 
 
+def _read_run_manifest(run_dir: Path) -> dict[str, Any]:
+    manifest = _read_json(run_dir / "logs/run_manifest.json")
+    snapshot = _read_yaml(run_dir / "logs/config_snapshot.yaml")
+    if not snapshot:
+        return manifest
+    merged = dict(manifest)
+    execution_activity = _get(snapshot, "execution_activity") or {}
+    hpo = _get(snapshot, "hpo") or {}
+    rankability = _get(snapshot, "rankability") or {}
+    fallbacks = {
+        "protocol_id": _get(snapshot, "protocol", "protocol_id"),
+        "data_cutoff_date": _get(snapshot, "protocol", "data_cutoff_date"),
+        "model_extension_id": _get(snapshot, "new_model_protocol", "model_extension_id"),
+        "diagnostic_status": rankability.get("diagnostic_status"),
+        "rankable_in_unified_table": rankability.get("rankable_in_unified_table"),
+        "rebalance_mode": _get(snapshot, "rebalance", "mode"),
+        "execution_activity_protocol": execution_activity.get("protocol"),
+        "turnover_optimization_protocol_id": execution_activity.get("turnover_optimization_protocol_id"),
+        "scheduler_blocks_model_actions": execution_activity.get("scheduler_blocks_model_actions"),
+        "activity_gate_enforced": execution_activity.get("activity_gate_enforced"),
+        "hpo_metric": hpo.get("metric"),
+        "hpo_objective": hpo.get("objective"),
+        "hpo_activity_constraints_enabled": _get(snapshot, "hpo", "activity_constraints", "enabled"),
+    }
+    if not merged.get("execution_activity") and execution_activity:
+        merged["execution_activity"] = execution_activity
+    for key, value in fallbacks.items():
+        if _manifest_value_missing(merged.get(key)) and value is not None:
+            merged[key] = value
+    return merged
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     with path.open("r", encoding="utf-8") as fh:
         payload = json.load(fh)
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _read_yaml(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    with path.open("r", encoding="utf-8") as fh:
+        payload = yaml.safe_load(fh)
     return dict(payload) if isinstance(payload, Mapping) else {}
 
 
@@ -962,6 +1402,10 @@ def _clean(value: Any) -> str:
         pass
     text = str(value).strip()
     return "" if text.lower() in {"nan", "none", "<na>"} else text
+
+
+def _manifest_value_missing(value: Any) -> bool:
+    return value is None or _clean(value) == ""
 
 
 def _scoped_root(path: str | Path) -> Path:

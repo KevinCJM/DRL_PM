@@ -61,6 +61,14 @@ PLATFORM_NATIVE_RL_MODEL_NAMES = frozenset(
         *HYBRID_DQN_OPTIMIZER_CHILD_MODEL_NAMES,
     }
 )
+HPO_ACTIVITY_AUDIT_COLUMNS = (
+    "model_rebalance_hit_rate",
+    "non_initial_turnover_per_opportunity",
+    "average_turnover",
+    "non_initial_rebalance_count",
+    "raw_model_requested_rebalance_count",
+    "model_chosen_hold_count",
+)
 HPO_TRIAL_COLUMNS = (
     "model_name",
     "fold_id",
@@ -71,6 +79,8 @@ HPO_TRIAL_COLUMNS = (
     "state",
     "objective_value",
     "validation_metric",
+    *HPO_ACTIVITY_AUDIT_COLUMNS,
+    "activity_failure_reason",
     "train_start",
     "train_end",
     "duration_sec",
@@ -379,7 +389,11 @@ def _run_equal_budget_hpo(experiment: HPOExperiment, model_names: Sequence[str])
     try:
         best_payload = _best_hpo_model_payload(model_payloads, direction)
     except RuntimeError as exc:
-        if not (diagnostic_run and child_failures and str(exc) == "ERR_HPO_NO_COMPLETED_TRIAL"):
+        if not (
+            diagnostic_run
+            and child_failures
+            and str(exc) in {"ERR_HPO_NO_COMPLETED_TRIAL", "ERR_HPO_NO_RANKABLE_COMPLETED_TRIAL"}
+        ):
             raise
         best_payload = dict(model_payloads[0])
         partial_diagnostic_without_best = True
@@ -671,11 +685,25 @@ def _is_native_hpo_trainable_model(model_name: str) -> bool:
 def _best_hpo_model_payload(payloads: Sequence[Mapping[str, Any]], direction: str) -> dict[str, Any]:
     reverse = str(direction).lower() != "minimize"
     finite_payloads = [item for item in payloads if math.isfinite(float(item.get("best_value", float("nan"))))]
-    ordered = sorted(finite_payloads, key=lambda item: float(item.get("best_value", float("nan"))), reverse=reverse)
+    rankable_payloads = [item for item in finite_payloads if _hpo_payload_rankable(item)]
+    ordered = sorted(rankable_payloads, key=lambda item: float(item.get("best_value", float("nan"))), reverse=reverse)
     if not ordered:
+        if finite_payloads:
+            raise RuntimeError("ERR_HPO_NO_RANKABLE_COMPLETED_TRIAL")
         raise RuntimeError("ERR_HPO_NO_COMPLETED_TRIAL")
     best = ordered[0]
     return dict(best)
+
+
+def _hpo_payload_rankable(payload: Mapping[str, Any]) -> bool:
+    if str(payload.get("status", "completed")) != "completed":
+        return False
+    if _clean_text(payload.get("final_activity_failure_reason")):
+        return False
+    if payload.get("rankable_in_unified_table") is not None and not _truthy(payload.get("rankable_in_unified_table")):
+        return False
+    diagnostic_status = _clean_text(payload.get("diagnostic_status"))
+    return diagnostic_status not in {"partial_diagnostic", "diagnostic_shared_dqn", "activity_diagnostic"}
 
 
 def _hpo_model_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -693,6 +721,10 @@ def _hpo_model_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
         "best_validation_metric": payload.get("best_validation_metric"),
         "hpo_final_report_count": _hpo_final_report_count(payload),
         "status": payload.get("status"),
+        "rankable_in_unified_table": payload.get("rankable_in_unified_table"),
+        "diagnostic_status": payload.get("diagnostic_status"),
+        "final_activity_passed": payload.get("final_activity_passed"),
+        "final_activity_failure_reason": payload.get("final_activity_failure_reason"),
     }
 
 
@@ -715,20 +747,47 @@ def _hpo_model_final_comparison(payloads: Sequence[Mapping[str, Any]]) -> pd.Dat
                 record["hpo_model_name"] = model_name
                 record["best_trial_number"] = payload.get("best_trial_number")
                 record["best_value"] = payload.get("best_value")
-                rows.append(record)
+                rows.append(_annotate_hpo_final_record(record, payload, model_name=model_name))
             continue
         metrics = payload.get("metrics") if isinstance(payload.get("metrics"), Mapping) else {}
         rows.append(
-            {
-                "model_name": model_name,
-                "hpo_model_name": model_name,
-                "status": payload.get("status", "completed"),
-                "best_trial_number": payload.get("best_trial_number"),
-                "best_value": payload.get("best_value"),
-                **{str(key): value for key, value in dict(metrics).items()},
-            }
+            _annotate_hpo_final_record(
+                {
+                    "model_name": model_name,
+                    "hpo_model_name": model_name,
+                    "status": payload.get("status", "completed"),
+                    "best_trial_number": payload.get("best_trial_number"),
+                    "best_value": payload.get("best_value"),
+                    **{str(key): value for key, value in dict(metrics).items()},
+                },
+                payload,
+                model_name=model_name,
+            )
         )
     return pd.DataFrame(rows)
+
+
+def _annotate_hpo_final_record(record: Mapping[str, Any], payload: Mapping[str, Any], *, model_name: str) -> dict[str, Any]:
+    result = dict(record)
+    result.setdefault("model_name", model_name)
+    result.setdefault("hpo_model_name", model_name)
+    for key, value in _activity_audit_values(payload, model_name=model_name).items():
+        result.setdefault(key, value)
+    failure = _clean_text(payload.get("final_activity_failure_reason"))
+    rankable = _hpo_payload_rankable(payload)
+    result.setdefault("final_activity_passed", failure == "")
+    result.setdefault("final_activity_failure_reason", failure)
+    if failure or not rankable:
+        result["rankable_in_unified_table"] = False
+        result["paper_included"] = False
+        if not _clean_text(result.get("diagnostic_status")):
+            result["diagnostic_status"] = _clean_text(payload.get("diagnostic_status")) or "activity_diagnostic"
+        if not _clean_text(result.get("reason")):
+            result["reason"] = failure or _clean_text(payload.get("reason")) or _clean_text(result.get("diagnostic_status")) or "non_rankable"
+    else:
+        result.setdefault("rankable_in_unified_table", True)
+        result.setdefault("paper_included", True)
+    return result
 
 
 def _hpo_model_final_frame(payloads: Sequence[Mapping[str, Any]], frame_name: str) -> pd.DataFrame:
@@ -787,6 +846,36 @@ def _first_frame(*values: Any) -> pd.DataFrame | None:
     return None
 
 
+def _activity_audit_values(result: Mapping[str, Any], *, model_name: str | None = None) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    metrics = _mapping(result.get("metrics"))
+    for column in HPO_ACTIVITY_AUDIT_COLUMNS:
+        if column in metrics:
+            values[column] = metrics[column]
+    comparison = _first_frame(result.get("main_comparison"), result.get("baseline_comparison"))
+    if comparison is not None and not comparison.empty:
+        selected = comparison
+        target_model = model_name or result.get("hpo_model_name") or result.get("model_name")
+        if target_model and "model_name" in comparison.columns:
+            match = comparison.loc[comparison["model_name"].astype(str).eq(str(target_model))]
+            if not match.empty:
+                selected = match
+        record = selected.iloc[0].to_dict()
+        for column in HPO_ACTIVITY_AUDIT_COLUMNS:
+            if column in record and column not in values:
+                values[column] = record[column]
+    return values
+
+
+def _clean_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and math.isnan(value):
+        return ""
+    text = str(value).strip()
+    return "" if text.lower() in {"nan", "none", "<na>"} else text
+
+
 def _safe_hpo_model_key(model_name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(model_name)).strip("._") or "model"
 
@@ -814,10 +903,10 @@ def _activity_trial_failure_reason(result: Mapping[str, Any], config: Mapping[st
     scope_families = {str(item) for item in constraints.get("scope_baseline_families", [])}
     if not families or families.isdisjoint(scope_families):
         return None
-    metrics = _mapping(result.get("metrics"))
-    hit_rate = float(metrics.get("model_rebalance_hit_rate", 0.0) or 0.0)
-    turnover_per_opportunity = float(metrics.get("non_initial_turnover_per_opportunity", 0.0) or 0.0)
-    avg_turnover = float(metrics.get("average_turnover", 0.0) or 0.0)
+    metrics = _activity_audit_values(result)
+    hit_rate = _safe_float(metrics.get("model_rebalance_hit_rate"), 0.0)
+    turnover_per_opportunity = _safe_float(metrics.get("non_initial_turnover_per_opportunity"), 0.0)
+    avg_turnover = _safe_float(metrics.get("average_turnover"), 0.0)
     min_hit_rate = float(constraints.get("min_model_rebalance_hit_rate", 0.05))
     max_hit_rate = constraints.get("max_model_rebalance_hit_rate")
     max_average_turnover = constraints.get("max_average_turnover")
@@ -832,6 +921,14 @@ def _activity_trial_failure_reason(result: Mapping[str, Any], config: Mapping[st
     if max_average_turnover is not None and avg_turnover > float(max_average_turnover):
         return "failed_high_trade_activity"
     return None
+
+
+def _safe_float(value: Any, default: float) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return default
+    return result if math.isfinite(result) else default
 
 
 def _result_baseline_families(result: Mapping[str, Any]) -> set[str]:
@@ -851,9 +948,10 @@ def _result_baseline_families(result: Mapping[str, Any]) -> set[str]:
         model_names.update(_frame_string_values(comparison, "paper_model_id"))
         if _frame_has_truthy(comparison, "platform_native_rl_training"):
             families.add("platform_native_rl")
-    model_name = result.get("model_name")
-    if model_name is not None:
-        model_names.add(str(model_name))
+    for key in ("model_name", "hpo_model_name", "paper_model_id"):
+        model_name = result.get(key)
+        if model_name is not None:
+            model_names.add(str(model_name))
     if families.intersection(PLATFORM_NATIVE_RL_FAMILY_ALIASES) or model_names.intersection(PLATFORM_NATIVE_RL_MODEL_NAMES):
         families.add("platform_native_rl")
     return families
@@ -992,8 +1090,11 @@ def _run_hpo_single(experiment: HPOExperiment) -> Mapping[str, Any]:
             trial_result = _result_mapping(_run_hpo_trial(experiment, trial, train_split, validation_split))
             validation_metric = _metric_value(trial_result, metric)
             objective_value = float(trial_result.get("objective_value", validation_metric))
+            row.update(_activity_audit_values(trial_result))
             activity_failure = _activity_trial_failure_reason(trial_result, config)
+            row["activity_failure_reason"] = activity_failure or ""
             if activity_failure:
+                row["fail_reason"] = activity_failure
                 raise _HPOTrialFailure(activity_failure)
             row["state"] = "complete"
             row["objective_value"] = objective_value
@@ -1063,14 +1164,28 @@ def _run_hpo_single(experiment: HPOExperiment) -> Mapping[str, Any]:
                 best_value=best_trial.value,
                 trial_count=len(trial_rows),
                 selection_split=validation_split,
+                config=config,
             ),
             "final_result": _result_summary(final_result),
             "hpo_model_name": str(getattr(experiment, "active_model_name", config.get("model", {}).get("name", "full_dqn_gated_multitask_cnn_ppo"))),
         }
     )
+    _apply_hpo_final_activity_status(payload, config)
     _refresh_new_model_artifacts(payload, config)
     _attach_single_model_hpo_final_outputs(payload)
     return payload
+
+
+def _apply_hpo_final_activity_status(payload: dict[str, Any], config: Mapping[str, Any]) -> None:
+    payload.update(_activity_audit_values(payload, model_name=_clean_text(payload.get("hpo_model_name")) or None))
+    failure = _activity_trial_failure_reason(payload, config)
+    payload["final_activity_passed"] = failure is None
+    payload["final_activity_failure_reason"] = failure or ""
+    if failure is None:
+        return
+    payload["rankable_in_unified_table"] = False
+    payload["diagnostic_status"] = "activity_diagnostic"
+    payload["reason"] = failure
 
 
 def _attach_single_model_hpo_final_outputs(payload: dict[str, Any]) -> None:
@@ -1383,6 +1498,7 @@ def _hpo_final_report_table(
     best_value: Any,
     trial_count: int,
     selection_split: str,
+    config: Mapping[str, Any] | None = None,
 ) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     for label, report in final_reports.items():
@@ -1404,6 +1520,10 @@ def _hpo_final_report_table(
             evaluated_checkpoint_path=result.get("evaluated_checkpoint_path"),
         )
         row.update(_hpo_final_report_metric_values(result, model_name=model_name))
+        row.update(_activity_audit_values(result, model_name=model_name))
+        activity_failure = _activity_trial_failure_reason(result, config) if config is not None else None
+        row["final_activity_passed"] = activity_failure is None
+        row["final_activity_failure_reason"] = activity_failure or ""
         rows.append(row)
     return _order_hpo_final_report_columns(pd.DataFrame(rows))
 

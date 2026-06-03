@@ -53,6 +53,7 @@ EXPECTED_TOP_LEVEL_KEYS = {
     "uncertainty",
     "distributional_cvar",
     "partial_rebalance",
+    "execution_activity",
     "new_model_protocol",
     "cage_eiie",
     "gt_rcpo_lite",
@@ -162,13 +163,30 @@ def test_defaults_are_filled(tmp_path):
     assert config["portfolio"]["initial_capital_currency"] == 100000000.0
     assert config["portfolio"]["currency"] == "CNY"
     assert config["security"]["offline_mode"] is True
-    assert DEFAULT_CONFIG["security"]["path_whitelist"] == ["/Users/chenjunming/Desktop/DRL_PM"]
+    assert DEFAULT_CONFIG["security"]["path_whitelist"] == [str(PROJECT_ROOT)]
 
 
 def test_paper_configs_use_disk_bounded_checkpoints():
     for path in (PROJECT_ROOT / "configs" / "paper").glob("*.yaml"):
+        if path.name.startswith("._"):
+            continue
         config = ConfigLoader.load(path)
         assert config["training"]["checkpoint_include_replay_buffer"] is False, path.name
+
+
+def test_active_execution_activity_requires_explicit_protocol_and_scheduler_policy(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        {
+            "execution_activity": {"activity_gate_enforced": True},
+            "security": {"path_whitelist": [str(PROJECT_ROOT), str(tmp_path)]},
+        },
+    )
+
+    with pytest.raises(ConfigError) as error:
+        ConfigLoader.load(path)
+
+    assert error.value.code == "ERR_CONFIG_MISSING_EXECUTION_ACTIVITY_FIELD"
 
 
 def test_m6_t4_paper_baseline_smoke_config_expands_related_work_alias():
@@ -223,11 +241,16 @@ def test_m6_t4_related_work_baseline_entrypoints_expand_alias_without_family_row
 def test_m6_t5_related_work_hpo_configs_use_six_budget_entries_and_pins(relative_path):
     config = ConfigLoader.load(PROJECT_ROOT / relative_path)
     expected_models = ["ppo_dqn_hierarchical_reimplementation", *HYBRID_DQN_OPTIMIZER_CHILD_MODEL_NAMES]
+    expected_metric = (
+        "validation_return_risk_cost_constrained"
+        if relative_path.startswith("configs/paper/")
+        else "validation_sharpe_minus_drawdown_turnover_penalty"
+    )
 
     assert config["hpo"]["trainable_models"] == expected_models
     assert HYBRID_DQN_OPTIMIZER_ALIAS not in config["hpo"]["trainable_models"]
-    assert config["hpo"]["metric"] == "validation_sharpe_minus_drawdown_turnover_penalty"
-    assert config["hpo"]["objective"] == "validation_sharpe_minus_drawdown_turnover_penalty"
+    assert config["hpo"]["metric"] == expected_metric
+    assert config["hpo"]["objective"] == expected_metric
     assert config["hybrid_dqn_optimizer"] == {
         "lookback_window": 252,
         "min_observations": 60,
@@ -617,6 +640,7 @@ def test_all_config_files_load():
         path
         for path in (PROJECT_ROOT / "configs").rglob("*.yaml")
         if "configs/data" not in path.as_posix()
+        and not path.name.startswith("._")
     )
     assert config_paths
 

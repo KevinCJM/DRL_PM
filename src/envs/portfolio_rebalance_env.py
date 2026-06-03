@@ -20,7 +20,8 @@ from src.envs.backtest_engine import (
     _date_index,
     _deep_update,
     _decision_dates,
-    _mark_scheduler_rebalanced,
+    _execution_activity_config,
+    _finalize_execution_action,
     _pending_action_for,
     _segment_dates,
     _zero_cost_model,
@@ -41,6 +42,38 @@ RELATED_WORK_ACTION_INFO_KEYS = (
     "gate_action",
     "gate_action_index",
     "rho",
+    "rho_logits",
+    "rho_probs",
+    "rho_entropy",
+    "rho_expected",
+    "rho_action_index",
+    "rho_policy_mode",
+    "rho_temperature",
+    "raw_rho",
+    "raw_rebalance_intensity",
+    "raw_model_requested_rebalance",
+    "raw_gate_action_index",
+    "raw_action",
+    "final_rho",
+    "final_rebalance_intensity",
+    "final_action",
+    "execution_activity_protocol",
+    "activity_protocol",
+    "scheduler_blocks_model_actions",
+    "activity_gate_enforced",
+    "turnover_optimization_protocol_id",
+    "execution_gate_allowed",
+    "scheduler_pre_allowed",
+    "scheduler_post_allowed",
+    "scheduler_final_allowed",
+    "scheduler_pre_blocked",
+    "scheduler_post_blocked",
+    "scheduler_final_blocked",
+    "scheduler_blocked_rebalance",
+    "execution_scheduler_blocked",
+    "model_chosen_hold",
+    "trade_opportunity",
+    "non_initial_trade_opportunity",
     "rebalance_values",
     "scheduler_allowed_rebalance",
     "forced_hold_reason",
@@ -93,6 +126,7 @@ class PortfolioRebalanceEnv(gym.Env):
         if config is not None:
             _deep_update(self.config, config)
         self.execution_config = self.config["execution_model"]
+        self.execution_activity_config = _execution_activity_config(self.config)
         self.data_governance_config = self.config.get("data_governance", {})
         self.portfolio_config = self.config["portfolio"]
         self.observation_dtype = np.dtype(self.config.get("env", {}).get("observation_dtype", "float32"))
@@ -212,8 +246,8 @@ class PortfolioRebalanceEnv(gym.Env):
             return self._step_delayed(decision_date, action, decision_state)
 
         portfolio_action = self._portfolio_action(action, decision_state)
-        final_action = self._final_rebalance_action(decision_date, decision_state, portfolio_action)
-        return self._step_immediate(decision_date, portfolio_action, final_action)
+        portfolio_action = self._finalized_portfolio_action(decision_date, decision_state, portfolio_action)
+        return self._step_immediate(decision_date, portfolio_action, portfolio_action.rebalance_action)
 
     def _step_immediate(
         self,
@@ -268,7 +302,8 @@ class PortfolioRebalanceEnv(gym.Env):
             execution_payload = (delayed_action, ready_action, execution_state, execution_result, float(reward), reward_info)
 
         action = self._portfolio_action(raw_action, decision_state)
-        final_action = self._final_rebalance_action(decision_date, decision_state, action)
+        action = self._finalized_portfolio_action(decision_date, decision_state, action)
+        final_action = action.rebalance_action
         pending_action = _pending_action_for(
             action,
             decision_date,
@@ -341,27 +376,21 @@ class PortfolioRebalanceEnv(gym.Env):
         )
         return PortfolioAction(target_weights, rebalance_action, rebalance_intensity, _action_info(action))
 
-    def _final_rebalance_action(
+    def _finalized_portfolio_action(
         self,
         decision_date: pd.Timestamp,
         decision_state: DecisionMarketState,
         action: PortfolioAction,
-    ) -> int:
+    ) -> PortfolioAction:
         scheduler = self._scheduler
-        scheduler_pre_allowed = scheduler.pre_check(decision_date, self._state, decision_state)
-        if self._first_trade:
-            _mark_scheduler_rebalanced(scheduler, decision_date)
-            return 1
-        if not scheduler_pre_allowed:
-            return 0
-        return RebalanceScheduler.final_rebalance_action(
-            scheduler.should_rebalance(
-                decision_date,
-                self._state,
-                decision_state,
-                candidate_weights=action.target_weights,
-            ),
-            action.rebalance_action,
+        return _finalize_execution_action(
+            scheduler,
+            decision_date,
+            self._state,
+            decision_state,
+            action,
+            self._first_trade,
+            self.execution_activity_config,
         )
 
     def _execute_step(
@@ -488,6 +517,9 @@ class PortfolioRebalanceEnv(gym.Env):
             "concentration": float(reward_info.get("concentration_penalty", 0.0)),
             "rebalance_action": int(final_action),
             "rebalance_intensity": float(action.rebalance_intensity),
+            "active_weight_change_l1": float(
+                np.sum(np.abs(execution_result.executed_weights - execution_result.pre_execution_drifted_weights))
+            ),
             "candidate_weights": action.target_weights.copy(),
             "executed_weights": execution_result.executed_weights.copy(),
             "constraint_violations": list(execution_result.info.get("constraint_violations", [])),

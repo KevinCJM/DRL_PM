@@ -412,6 +412,95 @@
         "run gate and agent tests as one regression set"
       ],
       "notes": []
+    },
+    {
+      "id": "P07",
+      "title": "Raw model rebalance intent and final execution action must stay distinct",
+      "severity": "high",
+      "confidence": "high",
+      "symptoms": [
+        "model appears to rebalance every day after threshold or scheduler logic should block trades",
+        "scheduler-blocked days are logged as model_chosen_hold instead of preserving raw intent",
+        "template index values leak into binary gate_action fields",
+        "hold template returns an all-zero initial portfolio target"
+      ],
+      "trigger_actions": [
+        "edit rebalance gate helpers",
+        "edit binary gate or template-based baseline strategies",
+        "edit PPOAgent action_for_env diagnostics passthrough",
+        "edit backtest scheduler or final action diagnostics",
+        "edit gate_action, raw_action, raw_rho, final_action, or rebalance_intensity fields"
+      ],
+      "why_risky": [
+        "paper turnover metrics and scheduler diagnostics depend on distinguishing raw model intent from final executable trades",
+        "binary gate, template index, partial rho, and scheduler-final action share similar field names but have different semantics"
+      ],
+      "related_paths": [
+        {
+          "kind": "file",
+          "ref": "src/baselines/eiie.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/bernoulli_gated_ppo.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/dqn_only.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/native_bernoulli_gated_ppo.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/native_dqn_template.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/gt_rcpo_lite.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/agents/ppo_agent.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/backtest_engine.py"
+        }
+      ],
+      "affected_modules": [
+        {
+          "kind": "module",
+          "ref": "baseline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "agent_training_family"
+        },
+        {
+          "kind": "module",
+          "ref": "env_runtime_family"
+        }
+      ],
+      "blast_radius": [
+        "daily turnover metrics",
+        "raw_model_requested_rebalance counters",
+        "scheduler_blocked_rebalance diagnostics",
+        "paper table rankability and auditability"
+      ],
+      "check_before_edit": [
+        "inspect _continuous_weight_rebalance_decision and _binary_gate_rebalance_decision before changing gate behavior",
+        "confirm raw_* diagnostics preserve model intent before threshold or scheduler finalization",
+        "confirm gate_action is binary final action and template_action_index stores non-binary template ids",
+        "confirm initial empty portfolio hold paths build a valid first position"
+      ],
+      "safe_observation_methods": [
+        "run targeted baseline gate tests before broad experiment reruns",
+        "compare raw_model_requested_rebalance, final_action, forced_hold_reason, and realized_turnover together",
+        "run agent passthrough tests when adding or renaming diagnostic fields"
+      ],
+      "notes": []
     }
   ]
 }

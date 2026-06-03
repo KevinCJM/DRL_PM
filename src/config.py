@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import yaml
 
 
-PROJECT_ROOT = Path("/Users/chenjunming/Desktop/DRL_PM")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VALID_COST_MODES = {"empirical_default", "calibrated"}
 VALID_FIXED_COST_UNITS = {"nav_fraction", "currency"}
 CANONICAL_VALIDATION_METRIC = "validation_sharpe_minus_drawdown_turnover_penalty"
@@ -238,6 +238,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "drawdown_threshold": 0.10,
         "risk_budget_tolerance": 0.05,
     },
+    "execution_activity": {
+        "protocol": "monthly_gate",
+        "scheduler_blocks_model_actions": True,
+        "activity_gate_enforced": False,
+        "turnover_optimization_protocol_id": "legacy_monthly_v1",
+        "min_model_rebalance_hit_rate": 0.0,
+        "max_model_rebalance_hit_rate": 1.0,
+        "min_non_initial_turnover_per_opportunity": 0.0,
+    },
     "model": {
         "name": "full_dqn_gated_multitask_cnn_ppo",
         "default_encoder": "cnn",
@@ -389,6 +398,22 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "cvar_loss_budget": 0.02,
         "drawdown_budget": 0.10,
         "n_quantiles": 51,
+        "gate_scoring": {
+            "mode": "legacy_raw",
+            "alpha_scale": 0.001,
+            "turnover_scale": 0.05,
+            "cost_scale": 0.001,
+            "cvar_scale": 0.01,
+            "drawdown_scale": 0.05,
+            "alpha_activation_threshold": 0.25,
+            "hold_opportunity_penalty": -0.20,
+            "turnover_budget_per_trade": 0.05,
+            "cost_budget_per_trade": 0.001,
+            "lambda_turnover": 0.20,
+            "lambda_cost": 0.20,
+            "lambda_cvar": 0.20,
+            "lambda_drawdown": 0.20,
+        },
     },
     "gt_rcpo_lite": {
         "enabled": False,
@@ -409,7 +434,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "ra_gt_rcpo": {
         "enabled": False,
-        "rho_actions": [0.0, 0.25, 0.5, 1.0],
+        "rho_policy": "score_rho_normalized",
+        "rho_actions": [0.0, 0.25, 0.5, 0.75, 1.0],
+        "rho_temperature": {
+            "tau_start": 1.0,
+            "tau_end": 0.20,
+            "tau_decay_steps": 2048,
+            "eval_mode": "argmax",
+            "min_entropy_threshold": 0.05,
+        },
         "model_dim": 64,
         "transformer_layers": 1,
         "attention_heads": 2,
@@ -433,6 +466,24 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "lambda_cost": 10.0,
         "lambda_cvar": 0.35,
         "lambda_drawdown": 0.25,
+        "min_gradient_updates_for_formal": 128,
+        "min_env_steps_for_formal": 2048,
+        "gate_scoring": {
+            "mode": "normalized",
+            "alpha_scale": 0.001,
+            "turnover_scale": 0.05,
+            "cost_scale": 0.001,
+            "cvar_scale": 0.01,
+            "drawdown_scale": 0.05,
+            "alpha_activation_threshold": 0.25,
+            "hold_opportunity_penalty": -0.20,
+            "turnover_budget_per_trade": 0.05,
+            "cost_budget_per_trade": 0.001,
+            "lambda_turnover": 0.20,
+            "lambda_cost": 0.20,
+            "lambda_cvar": 0.20,
+            "lambda_drawdown": 0.20,
+        },
     },
     "training": {
         "epochs": 1,
@@ -566,6 +617,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "timeout_per_model_seconds": None,
         "metric": CANONICAL_VALIDATION_METRIC,
         "direction": "maximize",
+        "run_mode": None,
         "seed": None,
         "objective": CANONICAL_VALIDATION_METRIC,
         "selection_split": "validation",
@@ -574,6 +626,20 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "native_only": False,
         "trainable_models": [],
         "search_space": {},
+        "activity_constraints": {
+            "enabled": False,
+            "scope_baseline_families": ["new_model_extension", "platform_native_rl"],
+            "scope_activity_protocols": ["weekly_gate", "daily_gate_with_cost_constraint"],
+            "min_model_rebalance_hit_rate": 0.05,
+            "max_model_rebalance_hit_rate": 0.60,
+            "min_non_initial_turnover_per_opportunity": 0.002,
+            "max_average_turnover": 0.030,
+            "hit_rate_underuse_penalty": 5.0,
+            "turnover_underuse_penalty": 5.0,
+            "turnover_overuse_penalty": 2.0,
+            "cost_budget": 0.010,
+            "cost_over_budget_penalty": 10.0,
+        },
     },
     "protocol": {
         "protocol_id": "core13_v2_full_reset_20260522",
@@ -815,6 +881,8 @@ class ConfigLoader:
         cls._apply_cli_overrides(resolved, cli_overrides)
         cls._normalize_runtime_aliases(resolved)
         cls._normalize_hpo_metric_aliases(resolved)
+        cls._normalize_security_whitelist(resolved)
+        cls.validate_execution_activity(resolved, loaded)
         cls.validate_execution_model(resolved)
         cls.validate_cost_model(resolved)
         cls.validate_experiment(resolved)
@@ -822,6 +890,26 @@ class ConfigLoader:
         validate_config_paths(resolved, path)
         resolved["config_hash"] = config_hash(resolved)
         return resolved
+
+    @classmethod
+    def _normalize_security_whitelist(cls, config: dict[str, Any]) -> None:
+        security = config.setdefault("security", {})
+        raw_whitelist = security.get("path_whitelist", [])
+        current_root = str(PROJECT_ROOT)
+        legacy_roots = {"/Users/chenjunming/Desktop/DRL_PM"}
+        raw_items = (
+            list(raw_whitelist)
+            if isinstance(raw_whitelist, Sequence) and not isinstance(raw_whitelist, (str, bytes))
+            else []
+        )
+        whitelist: list[str] = []
+        for item in raw_items:
+            normalized = current_root if str(item) in legacy_roots else str(item)
+            if normalized not in whitelist:
+                whitelist.append(normalized)
+        if current_root not in whitelist:
+            whitelist.append(current_root)
+        security["path_whitelist"] = whitelist
 
     @classmethod
     def validate_execution_model(cls, config: dict[str, Any]) -> None:
@@ -838,6 +926,39 @@ class ConfigLoader:
 
         if execution_model["same_close_idealized_execution_enabled"] is True:
             execution_model["idealized_execution"] = True
+
+    @classmethod
+    def validate_execution_activity(cls, config: dict[str, Any], loaded: Mapping[str, Any]) -> None:
+        activity = config["execution_activity"]
+        protocol = str(activity.get("protocol", "monthly_gate"))
+        if protocol not in {"monthly_gate", "weekly_gate", "daily_gate_with_cost_constraint"}:
+            raise ConfigError(
+                "ERR_CONFIG_INVALID_EXECUTION_ACTIVITY",
+                "execution_activity.protocol",
+                "ERR_CONFIG_INVALID_EXECUTION_ACTIVITY: execution_activity.protocol",
+            )
+        scheduler_blocks = bool(activity.get("scheduler_blocks_model_actions", True))
+        if protocol in {"monthly_gate", "weekly_gate"} and scheduler_blocks is not True:
+            raise ConfigError(
+                "ERR_CONFIG_INVALID_EXECUTION_ACTIVITY",
+                "execution_activity.scheduler_blocks_model_actions",
+                "ERR_CONFIG_INVALID_EXECUTION_ACTIVITY: execution_activity.scheduler_blocks_model_actions",
+            )
+        if protocol == "daily_gate_with_cost_constraint" and scheduler_blocks is not False:
+            raise ConfigError(
+                "ERR_CONFIG_INVALID_EXECUTION_ACTIVITY",
+                "execution_activity.scheduler_blocks_model_actions",
+                "ERR_CONFIG_INVALID_EXECUTION_ACTIVITY: daily_gate_with_cost_constraint requires scheduler_blocks_model_actions=false",
+            )
+        loaded_activity = loaded.get("execution_activity") if isinstance(loaded.get("execution_activity"), Mapping) else {}
+        if isinstance(loaded_activity, Mapping) and loaded_activity.get("activity_gate_enforced") is True:
+            for required_key in ("protocol", "scheduler_blocks_model_actions"):
+                if required_key not in loaded_activity:
+                    raise ConfigError(
+                        "ERR_CONFIG_MISSING_EXECUTION_ACTIVITY_FIELD",
+                        f"execution_activity.{required_key}",
+                        f"ERR_CONFIG_MISSING_EXECUTION_ACTIVITY_FIELD: execution_activity.{required_key}",
+                    )
 
     @classmethod
     def validate_cost_model(cls, config: dict[str, Any]) -> None:

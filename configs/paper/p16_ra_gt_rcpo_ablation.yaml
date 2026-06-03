@@ -35,12 +35,27 @@ baselines:
     max_gradient_updates_per_epoch: 8
 ra_gt_rcpo:
   enabled: true
+  rho_policy: straight_through_gumbel_softmax_v1
+  rho_actions:
+  - 0.0
+  - 0.25
+  - 0.5
+  - 0.75
+  - 1.0
+  rho_temperature:
+    tau_start: 1.0
+    tau_end: 0.2
+    tau_decay_steps: 2048
+    eval_mode: argmax
+    min_entropy_threshold: 0.05
+  min_gradient_updates_for_formal: 128
+  min_env_steps_for_formal: 2048
 hpo:
   enabled: true
   equal_budget_across_models: true
   n_trials_per_model: 5
-  metric: validation_sharpe_minus_drawdown_turnover_penalty
-  objective: validation_sharpe_minus_drawdown_turnover_penalty
+  metric: validation_return_risk_cost_constrained
+  objective: validation_return_risk_cost_constrained
   direction: maximize
   selection_split: validation
   final_report_split: validation
@@ -55,8 +70,8 @@ hpo:
   search_space:
     ra_gt_rcpo.learning_rate:
       type: float
-      low: 1.0e-5
-      high: 5.0e-4
+      low: 1.0e-05
+      high: 0.0005
       log: true
     ra_gt_rcpo.lambda_turnover:
       type: float
@@ -74,6 +89,22 @@ hpo:
       type: float
       low: 0.0
       high: 2.0
+  activity_constraints:
+    enabled: true
+    scope_baseline_families:
+    - new_model_extension
+    - platform_native_rl
+    scope_activity_protocols:
+    - daily_gate_with_cost_constraint
+    min_model_rebalance_hit_rate: 0.05
+    max_model_rebalance_hit_rate: 0.6
+    min_non_initial_turnover_per_opportunity: 0.002
+    max_average_turnover: 0.03
+    hit_rate_underuse_penalty: 5.0
+    turnover_underuse_penalty: 5.0
+    turnover_overuse_penalty: 2.0
+    cost_budget: 0.01
+    cost_over_budget_penalty: 10.0
 new_model_protocol:
   phase: P16.2_validation_ablation
   model_extension_id: core13_v2_p16_ra_gt_rcpo_20260525
@@ -100,3 +131,13 @@ rankability:
 security:
   path_whitelist:
   - /Users/chenjunming/Desktop/DRL_PM
+rebalance:
+  mode: daily
+execution_activity:
+  protocol: daily_gate_with_cost_constraint
+  scheduler_blocks_model_actions: false
+  activity_gate_enforced: true
+  turnover_optimization_protocol_id: turnover_active_v1
+  min_model_rebalance_hit_rate: 0.05
+  max_model_rebalance_hit_rate: 0.6
+  min_non_initial_turnover_per_opportunity: 0.002

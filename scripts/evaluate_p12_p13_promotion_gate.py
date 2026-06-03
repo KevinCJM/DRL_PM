@@ -41,14 +41,18 @@ def evaluate_promotion_gate(
     *,
     p12_config: str | Path,
     p12_run_dir: str | Path,
-    p13_config: str | Path,
-    p13_run_dir: str | Path,
     reference_dir: str | Path,
     output_dir: str | Path = DEFAULT_OUTPUT_DIR,
+    p13_config: str | Path | None = None,
+    p13_run_dir: str | Path | None = None,
     p12_supplemental_config: str | Path | None = None,
     p12_supplemental_run_dir: str | Path | None = None,
     p12_supplemental_models: Sequence[str] | None = None,
 ) -> dict[str, Path]:
+    p13_requested = p13_config is not None or p13_run_dir is not None
+    if p13_requested and (p13_config is None or p13_run_dir is None):
+        raise ValueError("ERR_PROMOTION_GATE_P13_ARGS_INCOMPLETE")
+
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     reference = pd.read_csv(Path(reference_dir) / "validation_reference_comparison.csv")
@@ -73,17 +77,18 @@ def evaluate_promotion_gate(
                 model_names=p12_supplemental_models or P12_SUPPLEMENTAL_MODELS,
             )
         )
-    candidate_frames.extend(
-        _evaluate_candidates(
-            config_path=p13_config,
-            run_dir=p13_run_dir,
-            output_dir=output / "candidate_validation_runs" / "p13",
-            model_names=P13_MODELS,
+    if p13_requested:
+        candidate_frames.extend(
+            _evaluate_candidates(
+                config_path=p13_config,
+                run_dir=p13_run_dir,
+                output_dir=output / "candidate_validation_runs" / "p13",
+                model_names=P13_MODELS,
+            )
         )
-    )
 
     candidates = _concat(candidate_frames)
-    report = _promotion_report(candidates, reference)
+    report = _promotion_report(candidates, reference, include_p13=p13_requested)
     paths = {
         "candidate_comparison": output / "promotion_candidate_comparison.csv",
         "gate_report": output / "promotion_gate_report.csv",
@@ -99,8 +104,9 @@ def evaluate_promotion_gate(
             "test_used_for_model_selection": False,
             "p12_config": str(p12_config),
             "p12_run_dir": str(p12_run_dir),
-            "p13_config": str(p13_config),
-            "p13_run_dir": str(p13_run_dir),
+            "p13_config": str(p13_config) if p13_config is not None else None,
+            "p13_run_dir": str(p13_run_dir) if p13_run_dir is not None else None,
+            "p13_evaluated": bool(p13_requested),
             "p12_supplemental_config": str(p12_supplemental_config) if p12_supplemental_config is not None else None,
             "p12_supplemental_run_dir": str(p12_supplemental_run_dir) if p12_supplemental_run_dir is not None else None,
             "p12_supplemental_models": list(p12_supplemental_models or P12_SUPPLEMENTAL_MODELS)
@@ -170,7 +176,7 @@ def _evaluate_candidates(
     return frames
 
 
-def _promotion_report(candidates: pd.DataFrame, reference: pd.DataFrame) -> pd.DataFrame:
+def _promotion_report(candidates: pd.DataFrame, reference: pd.DataFrame, *, include_p13: bool) -> pd.DataFrame:
     ref = _records(reference)
     candidate_records = _records(candidates)
     rows: list[dict[str, Any]] = []
@@ -181,8 +187,9 @@ def _promotion_report(candidates: pd.DataFrame, reference: pd.DataFrame) -> pd.D
         if row["promotion_gate_passed"]:
             p12_promoted_utilities.append(float(row["validation_return_cost_risk_utility"]))
     best_cage_utility = max(p12_promoted_utilities) if p12_promoted_utilities else None
-    for model_name in P13_MODELS:
-        rows.append(_p13_gate_row(model_name, candidate_records.get(model_name, {}), ref, best_cage_utility))
+    if include_p13:
+        for model_name in P13_MODELS:
+            rows.append(_p13_gate_row(model_name, candidate_records.get(model_name, {}), ref, best_cage_utility))
     return pd.DataFrame(rows)
 
 
@@ -277,8 +284,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate P12/P13 validation-only promotion gates.")
     parser.add_argument("--p12-config", default="configs/paper/p12_cage_eiie_pilot.yaml")
     parser.add_argument("--p12-run-dir", default="results/EXP28_P12_cage_eiie_pilot_s42")
-    parser.add_argument("--p13-config", default="configs/paper/p13_gt_rcpo_lite_pilot.yaml")
-    parser.add_argument("--p13-run-dir", default="results/EXP32_P13_gt_rcpo_lite_pilot_s42")
+    parser.add_argument("--p13-config", help="Optional; include P13 gate only when paired with --p13-run-dir.")
+    parser.add_argument("--p13-run-dir", help="Optional; include P13 gate only when paired with --p13-config.")
     parser.add_argument("--p12-supplemental-config")
     parser.add_argument("--p12-supplemental-run-dir")
     parser.add_argument("--p12-supplemental-model", action="append", dest="p12_supplemental_models")

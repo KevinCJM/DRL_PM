@@ -83,6 +83,29 @@ PAPER_TRAINABLE_MODEL_IDS = (
     *P12_P13_NEW_MODEL_IDS,
     *P16_RA_GT_RCPO_MODEL_IDS,
 )
+ACTIVE_ACTIVITY_PROTOCOL = "daily_gate_with_cost_constraint"
+ACTIVE_ACTIVITY_FAMILY_ALIASES = {
+    "new_model_extension",
+    "platform_native_rl",
+    "native_rl",
+    "native_rl_reimplementation",
+}
+ACTIVE_ACTIVITY_MODEL_IDS = {
+    "full_dqn_gated_multitask_cnn_ppo",
+    "ppo_native",
+    "cnn_ppo_native",
+    "bernoulli_gated_ppo_native",
+    "dqn_template_native",
+    "eiie_native",
+    "pgportfolio_eiie_native",
+    "cage_eiie_no_cvar",
+    "cage_eiie_distributional_no_cvar",
+    *PAPER_TRAINABLE_MODEL_IDS,
+}
+DEFAULT_MIN_ACTIVITY_HIT_RATE = 0.05
+DEFAULT_MAX_ACTIVITY_HIT_RATE = 0.60
+DEFAULT_MIN_ACTIVITY_TURNOVER_PER_OPPORTUNITY = 0.002
+DEFAULT_MAX_ACTIVITY_AVERAGE_TURNOVER = 0.030
 PAPER_TRAINABLE_REQUIRED_METADATA = (
     "algorithm_fidelity",
     "baseline_family",
@@ -99,7 +122,7 @@ CLOSEST_HYBRID_FIGURE_SOURCE_COLUMNS = (
     "model_name",
     *PAPER_TRAINABLE_REQUIRED_METADATA,
 )
-PAPER_MAIN_EXCLUDED_DIAGNOSTIC_STATUSES = {"partial_diagnostic", "diagnostic_shared_dqn"}
+PAPER_MAIN_EXCLUDED_DIAGNOSTIC_STATUSES = {"partial_diagnostic", "diagnostic_shared_dqn", "activity_diagnostic"}
 PAPER_DIAGNOSTIC_COMPARISON_COLUMNS = (
     "source_experiment",
     "source_run",
@@ -198,6 +221,7 @@ def aggregate_paper_results(
         config=config,
     )
     seed_summary = _paper_seed_summary(paper_main, metric_columns=seed_metric_columns, daily_returns=daily_returns)
+    turnover_activity = _paper_turnover_activity_summary(paper_main)
     closest_hybrid = _closest_hybrid_figure_source(paper_main, seed_summary)
     dedup_report = _paper_aggregate_dedup_report(comparison, daily_returns, paper_main)
 
@@ -206,6 +230,7 @@ def aggregate_paper_results(
         "paper_diagnostic_comparison": target / "paper_diagnostic_comparison.csv",
         "paper_paired_statistics": target / "paper_paired_statistics.csv",
         "paper_seed_summary": target / "paper_seed_summary.csv",
+        "paper_turnover_activity_summary": target / "paper_turnover_activity_summary.csv",
         "closest_hybrid_figure_source": target / "closest_hybrid_figure_source.csv",
         "paper_aggregate_dedup_report": target / "paper_aggregate_dedup_report.csv",
         "source_run_dirs": target / "source_run_dirs.txt",
@@ -216,6 +241,7 @@ def aggregate_paper_results(
     _write_csv(paper_diagnostic, outputs["paper_diagnostic_comparison"])
     _write_csv(paired, outputs["paper_paired_statistics"])
     _write_csv(seed_summary, outputs["paper_seed_summary"])
+    _write_csv(turnover_activity, outputs["paper_turnover_activity_summary"])
     _write_csv(closest_hybrid, outputs["closest_hybrid_figure_source"])
     _write_csv(dedup_report, outputs["paper_aggregate_dedup_report"])
     _write_source_run_dirs(runs, outputs["source_run_dirs"])
@@ -431,6 +457,18 @@ def _collect_daily_returns(run_dirs: Sequence[Path]) -> pd.DataFrame:
 
 def _apply_manifest_metadata(frame: pd.DataFrame, manifest: Mapping[str, Any]) -> pd.DataFrame:
     result = frame.copy()
+    execution_activity = manifest.get("execution_activity") if isinstance(manifest.get("execution_activity"), Mapping) else {}
+    derived_values = {
+        "activity_protocol": execution_activity.get("protocol"),
+        "execution_activity_protocol": execution_activity.get("protocol"),
+        "turnover_optimization_protocol_id": execution_activity.get("turnover_optimization_protocol_id"),
+        "scheduler_blocks_model_actions": execution_activity.get("scheduler_blocks_model_actions"),
+        "activity_gate_enforced": execution_activity.get("activity_gate_enforced"),
+        "min_model_rebalance_hit_rate": execution_activity.get("min_model_rebalance_hit_rate"),
+        "max_model_rebalance_hit_rate": execution_activity.get("max_model_rebalance_hit_rate"),
+        "min_non_initial_turnover_per_opportunity": execution_activity.get("min_non_initial_turnover_per_opportunity"),
+        "max_average_turnover": execution_activity.get("max_average_turnover"),
+    }
     for column in (
         "protocol_id",
         "asset_universe_id",
@@ -451,8 +489,19 @@ def _apply_manifest_metadata(frame: pd.DataFrame, manifest: Mapping[str, Any]) -
         "daily_returns_finite",
         "daily_nav_finite",
         "frozen_or_imputed_valuation_count",
+        "activity_protocol",
+        "execution_activity_protocol",
+        "turnover_optimization_protocol_id",
+        "scheduler_blocks_model_actions",
+        "activity_gate_enforced",
+        "min_model_rebalance_hit_rate",
+        "max_model_rebalance_hit_rate",
+        "min_non_initial_turnover_per_opportunity",
+        "max_average_turnover",
     ):
         value = manifest.get(column)
+        if value is None:
+            value = derived_values.get(column)
         if value is None and column in {"rankable_in_unified_table", "diagnostic_status"}:
             rankability = manifest.get("rankability") if isinstance(manifest.get("rankability"), Mapping) else {}
             value = rankability.get(column)
@@ -475,6 +524,7 @@ def _paper_main_comparison(comparison: pd.DataFrame, daily_returns: pd.DataFrame
             result["rankable_in_unified_table"] = True
         else:
             result["rankable_in_unified_table"] = result["rankable_in_unified_table"].fillna(True)
+    result = _apply_activity_rankability(result)
     result = result.loc[_paper_main_rankable_mask(result)].copy()
     if "paper_included" not in result.columns:
         result["paper_included"] = result["rankable_in_unified_table"].map(_truthy)
@@ -483,6 +533,142 @@ def _paper_main_comparison(comparison: pd.DataFrame, daily_returns: pd.DataFrame
     result = _dedupe_comparison_rows(result)
     result = result.drop(columns=["_paper_model_id_explicit"], errors="ignore")
     return result.sort_values(["source_run", "paper_model_id"], kind="mergesort").reset_index(drop=True)
+
+
+def _apply_activity_rankability(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty and len(frame.columns) == 0:
+        return frame.copy()
+    result = _with_paper_identity(frame)
+    if "rankable_in_unified_table" not in result.columns:
+        result["rankable_in_unified_table"] = True
+    else:
+        result["rankable_in_unified_table"] = result["rankable_in_unified_table"].fillna(True)
+    if "paper_included" not in result.columns:
+        result["paper_included"] = result["rankable_in_unified_table"].map(_truthy)
+    else:
+        result["paper_included"] = result["paper_included"].fillna(result["rankable_in_unified_table"]).map(_truthy)
+    for column in ("reason", "diagnostic_status"):
+        if column not in result.columns:
+            result[column] = pd.NA
+    row_reasons = pd.Series([_activity_row_diagnostic_reason(row) for _, row in result.iterrows()], index=result.index)
+    group_reasons = _activity_group_diagnostic_reason_series(result)
+    reasons = row_reasons.where(row_reasons.map(bool), group_reasons)
+    failing = reasons.map(bool)
+    if not failing.any():
+        return result
+    result.loc[failing, "rankable_in_unified_table"] = False
+    result.loc[failing, "paper_included"] = False
+    missing_reason = result["reason"].isna() | result["reason"].astype(str).str.strip().isin(("", "nan", "None", "<NA>"))
+    result.loc[failing & missing_reason, "reason"] = reasons.loc[failing & missing_reason]
+    missing_status = result["diagnostic_status"].isna() | result["diagnostic_status"].astype(str).str.strip().isin(("", "nan", "None", "<NA>"))
+    result.loc[failing & missing_status, "diagnostic_status"] = "activity_diagnostic"
+    return result
+
+
+def _activity_group_diagnostic_reason_series(frame: pd.DataFrame) -> pd.Series:
+    reasons = pd.Series("", index=frame.index, dtype=object)
+    if frame.empty:
+        return reasons
+    group_cols = ["paper_group_id" if "paper_group_id" in frame.columns else "source_run", "paper_model_id"]
+    if not all(column in frame.columns for column in group_cols):
+        return reasons
+    for _, group in frame.groupby(group_cols, dropna=False, sort=False):
+        scoped = pd.Series([_activity_scoped(row) for _, row in group.iterrows()], index=group.index)
+        if not scoped.any():
+            continue
+        scoped_group = group.loc[scoped].copy()
+        reason = _activity_group_diagnostic_reason(scoped_group)
+        if reason:
+            reasons.loc[scoped_group.index] = reason
+    return reasons
+
+
+def _activity_group_diagnostic_reason(group: pd.DataFrame) -> str:
+    hit_rate = _finite_mean(group, "model_rebalance_hit_rate")
+    turnover_per_opportunity = _finite_mean(group, "non_initial_turnover_per_opportunity")
+    avg_turnover = _finite_mean(group, "average_turnover")
+    min_hit_rate = _activity_threshold(group.iloc[0], "min_model_rebalance_hit_rate", DEFAULT_MIN_ACTIVITY_HIT_RATE)
+    max_hit_rate = _activity_threshold(group.iloc[0], "max_model_rebalance_hit_rate", DEFAULT_MAX_ACTIVITY_HIT_RATE)
+    min_turnover = _activity_threshold(
+        group.iloc[0],
+        "min_non_initial_turnover_per_opportunity",
+        DEFAULT_MIN_ACTIVITY_TURNOVER_PER_OPPORTUNITY,
+    )
+    max_avg_turnover = _activity_threshold(group.iloc[0], "max_average_turnover", DEFAULT_MAX_ACTIVITY_AVERAGE_TURNOVER)
+    if hit_rate is not None and hit_rate < min_hit_rate:
+        return "failed_low_trade_activity_group"
+    if turnover_per_opportunity is not None and turnover_per_opportunity < min_turnover:
+        return "failed_low_trade_activity_group"
+    if hit_rate is not None and hit_rate > max_hit_rate:
+        return "failed_high_trade_activity_group"
+    if avg_turnover is not None and avg_turnover > max_avg_turnover:
+        return "failed_high_trade_activity_group"
+    return ""
+
+
+def _activity_row_diagnostic_reason(row: pd.Series) -> str:
+    explicit = _clean_value(row.get("final_activity_failure_reason"))
+    if explicit:
+        return explicit
+    if not _activity_scoped(row):
+        return ""
+    min_hit_rate = _activity_threshold(row, "min_model_rebalance_hit_rate", DEFAULT_MIN_ACTIVITY_HIT_RATE)
+    max_hit_rate = _activity_threshold(row, "max_model_rebalance_hit_rate", DEFAULT_MAX_ACTIVITY_HIT_RATE)
+    min_turnover = _activity_threshold(row, "min_non_initial_turnover_per_opportunity", DEFAULT_MIN_ACTIVITY_TURNOVER_PER_OPPORTUNITY)
+    max_avg_turnover = _activity_threshold(row, "max_average_turnover", DEFAULT_MAX_ACTIVITY_AVERAGE_TURNOVER)
+    hit_rate = _float_or_none(row.get("model_rebalance_hit_rate"))
+    turnover_per_opportunity = _float_or_none(row.get("non_initial_turnover_per_opportunity"))
+    avg_turnover = _float_or_none(row.get("average_turnover"))
+    if hit_rate is not None and hit_rate < min_hit_rate:
+        return "failed_low_trade_activity"
+    if turnover_per_opportunity is not None and turnover_per_opportunity < min_turnover:
+        return "failed_low_trade_activity"
+    if hit_rate is not None and hit_rate > max_hit_rate:
+        return "failed_high_trade_activity"
+    if avg_turnover is not None and avg_turnover > max_avg_turnover:
+        return "failed_high_trade_activity"
+    return ""
+
+
+def _activity_scoped(row: pd.Series) -> bool:
+    if _clean_value(row.get("final_activity_failure_reason")):
+        return True
+    protocol = _clean_value(row.get("activity_protocol")) or _clean_value(row.get("execution_activity_protocol"))
+    if protocol and protocol != ACTIVE_ACTIVITY_PROTOCOL:
+        return False
+    if "activity_gate_enforced" in row and _clean_value(row.get("activity_gate_enforced")) and not _truthy(row.get("activity_gate_enforced")):
+        return False
+    identifiers = {
+        _clean_value(row.get("paper_model_id")),
+        _clean_value(row.get("model_name")),
+        _clean_value(row.get("hpo_model_name")),
+        _clean_value(row.get("training_algorithm")),
+    }
+    identifiers.discard("")
+    family = _clean_value(row.get("baseline_family"))
+    if family in ACTIVE_ACTIVITY_FAMILY_ALIASES:
+        return True
+    return bool(identifiers.intersection(ACTIVE_ACTIVITY_MODEL_IDS))
+
+
+def _activity_threshold(row: pd.Series, column: str, default: float) -> float:
+    value = _float_or_none(row.get(column))
+    return default if value is None else value
+
+
+def _finite_mean(frame: pd.DataFrame, column: str) -> float | None:
+    if column not in frame.columns:
+        return None
+    values = pd.to_numeric(frame[column], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    return None if values.empty else float(values.mean())
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if np.isfinite(result) else None
 
 
 def _comparison_from_daily_returns(daily_returns: pd.DataFrame) -> pd.DataFrame:
@@ -532,7 +718,7 @@ def _paper_diagnostic_comparison(comparison: pd.DataFrame, daily_returns: pd.Dat
         sources.append(daily_source)
     if not sources:
         return pd.DataFrame(columns=PAPER_DIAGNOSTIC_COMPARISON_COLUMNS)
-    source = pd.concat(sources, ignore_index=True, sort=False)
+    source = _apply_activity_rankability(pd.concat(sources, ignore_index=True, sort=False))
     rows: list[dict[str, Any]] = []
     for _, row in source.iterrows():
         reason = _paper_diagnostic_reason(row)
@@ -649,6 +835,68 @@ def _paper_seed_summary(
                 }
             )
     return pd.DataFrame(rows, columns=PAPER_SEED_SUMMARY_COLUMNS)
+
+
+def _paper_turnover_activity_summary(paper_main: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "paper_model_id",
+        "n_seeds",
+        "activity_protocol",
+        "avg_turnover",
+        "total_transaction_cost",
+        "model_rebalance_hit_rate_mean",
+        "non_initial_rebalance_count_mean",
+        "non_initial_turnover_sum_mean",
+        "non_initial_turnover_per_opportunity_mean",
+        "scheduler_blocked_rebalance_count_mean",
+        "scheduler_pre_blocked_count_mean",
+        "scheduler_post_blocked_count_mean",
+        "scheduler_final_blocked_count_mean",
+        "low_activity_flag",
+    ]
+    if paper_main.empty:
+        return pd.DataFrame(columns=columns)
+    source = _with_paper_identity(paper_main)
+    rows: list[dict[str, Any]] = []
+    for paper_model_id, group in source.groupby("paper_model_id", dropna=False, sort=False):
+        hit_rate = _numeric_or_nan(group, "model_rebalance_hit_rate")
+        turnover_per_opp = _numeric_or_nan(group, "non_initial_turnover_per_opportunity")
+        low_activity = bool(
+            (not hit_rate.dropna().empty and float(hit_rate.mean()) < 0.05)
+            or (not turnover_per_opp.dropna().empty and float(turnover_per_opp.mean()) < 0.002)
+        )
+        rows.append(
+            {
+                "paper_model_id": paper_model_id,
+                "n_seeds": int(_numeric_or_nan(group, "seed").nunique()) if "seed" in group.columns else int(len(group)),
+                "activity_protocol": _first_value(group, "activity_protocol")
+                or _first_value(group, "execution_activity_protocol"),
+                "avg_turnover": _mean_or_na(group, "average_turnover"),
+                "total_transaction_cost": _mean_or_na(group, "total_transaction_cost"),
+                "model_rebalance_hit_rate_mean": _mean_or_na(group, "model_rebalance_hit_rate"),
+                "non_initial_rebalance_count_mean": _mean_or_na(group, "non_initial_rebalance_count"),
+                "non_initial_turnover_sum_mean": _mean_or_na(group, "non_initial_turnover_sum"),
+                "non_initial_turnover_per_opportunity_mean": _mean_or_na(group, "non_initial_turnover_per_opportunity"),
+                "scheduler_blocked_rebalance_count_mean": _mean_or_na(group, "scheduler_blocked_rebalance_count"),
+                "scheduler_pre_blocked_count_mean": _mean_or_na(group, "scheduler_pre_blocked_count"),
+                "scheduler_post_blocked_count_mean": _mean_or_na(group, "scheduler_post_blocked_count"),
+                "scheduler_final_blocked_count_mean": _mean_or_na(group, "scheduler_final_blocked_count"),
+                "low_activity_flag": low_activity,
+            }
+        )
+    return pd.DataFrame(rows, columns=columns)
+
+
+def _mean_or_na(frame: pd.DataFrame, column: str) -> Any:
+    values = _numeric_or_nan(frame, column)
+    finite = values[np.isfinite(values)]
+    return pd.NA if finite.empty else float(finite.mean())
+
+
+def _numeric_or_nan(frame: pd.DataFrame, column: str) -> pd.Series:
+    if column not in frame.columns:
+        return pd.Series(dtype=float)
+    return pd.to_numeric(frame[column], errors="coerce")
 
 
 def _unique_return_series_counts(daily_returns: pd.DataFrame | None) -> dict[tuple[str, str], int]:
@@ -927,6 +1175,9 @@ def _paper_diagnostic_reason(row: pd.Series) -> str:
     seed_grid_reason = _seed_grid_diagnostic_reason(row)
     if seed_grid_reason:
         return explicit_reason or seed_grid_reason
+    activity_reason = _activity_row_diagnostic_reason(row)
+    if activity_reason:
+        return explicit_reason or activity_reason
     if _truthy(row.get("proxy_training", False)):
         return explicit_reason or "proxy_training"
     if _truthy(row.get("external_original_implementation", False)):

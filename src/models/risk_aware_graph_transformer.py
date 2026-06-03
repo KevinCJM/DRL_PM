@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,6 +27,12 @@ RA_GT_RCPO_MODEL_NAMES = (RA_GT_RCPO_MODEL_NAME, *RA_GT_RCPO_ABLATION_MODEL_NAME
 class RiskAwareGraphTransformerOutput:
     candidate_weights: torch.Tensor
     actor_logits: torch.Tensor
+    rho_logits: torch.Tensor
+    rho_probs: torch.Tensor
+    rho_action_index: torch.Tensor
+    rho: torch.Tensor
+    rho_entropy: torch.Tensor
+    rho_expected: torch.Tensor
     value_return: torch.Tensor
     value_cost: torch.Tensor
     value_drawdown: torch.Tensor
@@ -52,6 +58,7 @@ class RiskAwareGraphTransformer(nn.Module):
         use_graph: bool = True,
         use_transformer: bool = True,
         mlp_actor_critic: bool = False,
+        rho_values: Sequence[float] | None = None,
     ) -> None:
         super().__init__()
         self.n_features = int(n_features)
@@ -62,6 +69,8 @@ class RiskAwareGraphTransformer(nn.Module):
         self.use_graph = bool(use_graph)
         self.use_transformer = bool(use_transformer)
         self.mlp_actor_critic = bool(mlp_actor_critic)
+        resolved_rhos = _rho_values(rho_values)
+        self.register_buffer("rho_values", torch.tensor(resolved_rhos, dtype=torch.float32), persistent=False)
 
         self.input_projection = nn.Linear(self.n_features, self.model_dim)
         self.time_position = nn.Parameter(torch.zeros(1, self.window_size, self.model_dim))
@@ -96,6 +105,12 @@ class RiskAwareGraphTransformer(nn.Module):
             nn.Dropout(float(dropout)),
             nn.Linear(self.model_dim, 1),
         )
+        self.rho_head = nn.Sequential(
+            nn.Linear(self.model_dim, self.model_dim),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(self.model_dim, len(resolved_rhos)),
+        )
         self.return_critic = _critic_head(self.model_dim)
         self.cost_critic = _critic_head(self.model_dim)
         self.drawdown_critic = _critic_head(self.model_dim)
@@ -129,9 +144,21 @@ class RiskAwareGraphTransformer(nn.Module):
         logits = self.actor_head(actor_input).squeeze(-1)
         candidate = masked_softmax(logits, mask)
         critic_context = context + torch.bmm(candidate.unsqueeze(1), asset_tokens).squeeze(1)
+        rho_logits = self.rho_head(critic_context)
+        rho_probs = torch.softmax(rho_logits, dim=-1)
+        rho_action_index = torch.argmax(rho_probs, dim=-1)
+        rho = self.rho_values.to(device=x.device, dtype=x.dtype)[rho_action_index]
+        rho_entropy = -(rho_probs.clamp_min(1.0e-12) * rho_probs.clamp_min(1.0e-12).log()).sum(dim=-1)
+        rho_expected = (rho_probs * self.rho_values.to(device=x.device, dtype=x.dtype).unsqueeze(0)).sum(dim=-1)
         return RiskAwareGraphTransformerOutput(
             candidate_weights=candidate,
             actor_logits=logits,
+            rho_logits=rho_logits,
+            rho_probs=rho_probs,
+            rho_action_index=rho_action_index,
+            rho=rho,
+            rho_entropy=rho_entropy,
+            rho_expected=rho_expected,
             value_return=self.return_critic(critic_context).squeeze(-1),
             value_cost=F.softplus(self.cost_critic(critic_context).squeeze(-1)),
             value_drawdown=F.softplus(self.drawdown_critic(critic_context).squeeze(-1)),
@@ -226,6 +253,7 @@ def build_risk_aware_graph_transformer(config: Mapping[str, Any], *, model_name:
         use_graph=bool(section.get("use_graph", True)),
         use_transformer=bool(section.get("use_transformer", True)),
         mlp_actor_critic=bool(section.get("mlp_actor_critic", False)),
+        rho_values=section.get("rho_actions"),
     )
 
 
@@ -255,6 +283,14 @@ def _valid_attention_heads(model_dim: int, requested: int) -> int:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _rho_values(values: Sequence[float] | None) -> tuple[float, ...]:
+    raw = [0.0, 0.25, 0.5, 0.75, 1.0] if values is None else list(values)
+    resolved = sorted({max(0.0, min(1.0, float(value))) for value in raw})
+    if 0.0 not in resolved:
+        resolved.insert(0, 0.0)
+    return tuple(resolved)
 
 
 __all__ = [

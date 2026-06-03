@@ -376,6 +376,14 @@ COST_CALIBRATION_COLUMNS = (
     "fallback_reason",
     "status",
 )
+HPO_ACTIVITY_AUDIT_COLUMNS = (
+    "model_rebalance_hit_rate",
+    "non_initial_turnover_per_opportunity",
+    "average_turnover",
+    "non_initial_rebalance_count",
+    "raw_model_requested_rebalance_count",
+    "model_chosen_hold_count",
+)
 HPO_TRIAL_COLUMNS = (
     "model_name",
     "fold_id",
@@ -386,6 +394,8 @@ HPO_TRIAL_COLUMNS = (
     "state",
     "objective_value",
     "validation_metric",
+    *HPO_ACTIVITY_AUDIT_COLUMNS,
+    "activity_failure_reason",
     "train_start",
     "train_end",
     "duration_sec",
@@ -408,14 +418,50 @@ BASELINE_DAILY_DIAGNOSTICS_COLUMNS = (
     "gate_action",
     "gate_action_index",
     "rho",
+    "rho_logits",
+    "rho_probs",
+    "rho_entropy",
+    "rho_expected",
+    "rho_action_index",
+    "rho_policy_mode",
+    "rho_temperature",
+    "raw_rho",
+    "raw_rebalance_intensity",
+    "raw_model_requested_rebalance",
+    "raw_gate_action_index",
+    "raw_action",
+    "final_rho",
+    "final_rebalance_intensity",
+    "final_action",
+    "execution_activity_protocol",
+    "activity_protocol",
+    "scheduler_blocks_model_actions",
+    "activity_gate_enforced",
+    "turnover_optimization_protocol_id",
+    "execution_gate_allowed",
     "rebalance_intensity",
     "rebalance_values",
+    "gate_score_components",
+    "gate_scoring_mode",
+    "expected_alpha_horizon",
     "candidate_turnover",
     "estimated_turnover",
     "realized_turnover",
     "estimated_cost",
     "realized_cost",
     "scheduler_allowed_rebalance",
+    "scheduler_pre_allowed",
+    "scheduler_post_allowed",
+    "scheduler_final_allowed",
+    "scheduler_pre_blocked",
+    "scheduler_post_blocked",
+    "scheduler_final_blocked",
+    "scheduler_blocked_rebalance",
+    "execution_scheduler_blocked",
+    "model_chosen_hold",
+    "trade_opportunity",
+    "non_initial_trade_opportunity",
+    "active_weight_change_l1",
     "forced_hold_reason",
     "CVaR_loss_5",
     "drawdown",
@@ -724,6 +770,9 @@ def _run_manifest(
     data_cfg = _mapping(cfg.get("data"))
     data_governance = dict(_mapping(cfg.get("data_governance")))
     execution_model = dict(_mapping(cfg.get("execution_model")))
+    execution_activity = dict(_mapping(cfg.get("execution_activity")))
+    rebalance = dict(_mapping(cfg.get("rebalance")))
+    hpo = dict(_mapping(cfg.get("hpo")))
     protocol = _mapping(cfg.get("protocol"))
     new_model_protocol = _mapping(cfg.get("new_model_protocol"))
     rankability = dict(_mapping(cfg.get("rankability")))
@@ -828,6 +877,32 @@ def _run_manifest(
         "code_version": _first_not_none(existing.get("code_version"), _value(result, "code_version")),
         "created_at": existing.get("created_at") or now,
         "execution_model": execution_model,
+        "rebalance_mode": _first_not_none(rebalance.get("mode"), existing.get("rebalance_mode")),
+        "execution_activity": execution_activity,
+        "execution_activity_protocol": _first_not_none(
+            execution_activity.get("protocol"),
+            existing.get("execution_activity_protocol"),
+            _first_frame_value(daily_frames.get("baseline_daily_diagnostics"), "execution_activity_protocol"),
+        ),
+        "turnover_optimization_protocol_id": _first_not_none(
+            execution_activity.get("turnover_optimization_protocol_id"),
+            existing.get("turnover_optimization_protocol_id"),
+            _first_frame_value(daily_frames.get("baseline_daily_diagnostics"), "turnover_optimization_protocol_id"),
+        ),
+        "scheduler_blocks_model_actions": _first_not_none(
+            execution_activity.get("scheduler_blocks_model_actions"),
+            existing.get("scheduler_blocks_model_actions"),
+        ),
+        "activity_gate_enforced": _first_not_none(
+            execution_activity.get("activity_gate_enforced"),
+            existing.get("activity_gate_enforced"),
+        ),
+        "hpo_metric": _first_not_none(hpo.get("metric"), existing.get("hpo_metric")),
+        "hpo_objective": _first_not_none(hpo.get("objective"), existing.get("hpo_objective")),
+        "hpo_activity_constraints_enabled": _first_not_none(
+            _mapping(hpo.get("activity_constraints")).get("enabled"),
+            existing.get("hpo_activity_constraints_enabled"),
+        ),
         "data_governance": data_governance,
         "portfolio_initial_nav": _first_not_none(portfolio.get("initial_nav"), existing.get("portfolio_initial_nav")),
         "portfolio_initial_capital_currency": _first_not_none(

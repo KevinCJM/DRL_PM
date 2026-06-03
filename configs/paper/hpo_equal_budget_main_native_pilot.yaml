@@ -48,8 +48,8 @@ hpo:
   equal_budget_across_models: true
   native_only: false
   n_trials_per_model: 1
-  metric: validation_sharpe_minus_drawdown_turnover_penalty
-  objective: validation_sharpe_minus_drawdown_turnover_penalty
+  metric: validation_return_risk_cost_constrained
+  objective: validation_return_risk_cost_constrained
   direction: maximize
   selection_split: validation
   final_report_split: test
@@ -81,6 +81,22 @@ hpo:
       type: float
       low: 0.0
       high: 0.02
+  activity_constraints:
+    enabled: true
+    scope_baseline_families:
+    - new_model_extension
+    - platform_native_rl
+    scope_activity_protocols:
+    - daily_gate_with_cost_constraint
+    min_model_rebalance_hit_rate: 0.05
+    max_model_rebalance_hit_rate: 0.6
+    min_non_initial_turnover_per_opportunity: 0.002
+    max_average_turnover: 0.03
+    hit_rate_underuse_penalty: 5.0
+    turnover_underuse_penalty: 5.0
+    turnover_overuse_penalty: 2.0
+    cost_budget: 0.01
+    cost_over_budget_penalty: 10.0
 baselines:
   enabled: true
   traditional: []
@@ -126,3 +142,13 @@ rankability:
 security:
   path_whitelist:
   - /Users/chenjunming/Desktop/DRL_PM
+rebalance:
+  mode: daily
+execution_activity:
+  protocol: daily_gate_with_cost_constraint
+  scheduler_blocks_model_actions: false
+  activity_gate_enforced: true
+  turnover_optimization_protocol_id: turnover_active_v1
+  min_model_rebalance_hit_rate: 0.05
+  max_model_rebalance_hit_rate: 0.6
+  min_non_initial_turnover_per_opportunity: 0.002

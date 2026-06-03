@@ -12,12 +12,14 @@ from src.agents.constrained_actor_critic_agent import ConstrainedActorCriticAgen
 from src.baselines.base_strategy import BaseStrategy
 from src.baselines.cage_common import (
     choose_rho,
+    compute_expected_alpha_horizon,
     decision_return_features,
     estimate_cost,
     estimate_turnover,
     gate_action_index,
     mapping,
     normalize_candidate,
+    score_rho_normalized,
     weights_json,
 )
 from src.baselines.deep_training import collect_training_batch
@@ -94,10 +96,13 @@ class RiskAwareGTRCPOStrategy(BaseStrategy):
         history["clean_room_reimplementation"] = True
         self.training_history = history
         gradient_updates = int(stats.get("gradient_updates", 0))
+        env_steps = int(stats.get("env_steps", 0))
         status = "completed" if gradient_updates > 0 else "failed_no_gradient_updates"
+        if status == "completed":
+            status = _formal_training_budget_status(self.config, self._section(), env_steps, gradient_updates)
         self.training_result = self._training_result(
             status=status,
-            env_steps=int(stats.get("env_steps", 0)),
+            env_steps=env_steps,
             gradient_updates=gradient_updates,
             best_validation_metric=stats.get("best_validation_metric"),
         )
@@ -126,17 +131,27 @@ class RiskAwareGTRCPOStrategy(BaseStrategy):
         context = mapping(getattr(self, "decision_context", {}))
         scheduler_allowed = bool(context.get("scheduler_allowed_rebalance", True))
         first_trade = bool(context.get("first_trade", False))
-        rho, scores, forced_hold_reason = self._rho_action(
+        section = self._section()
+        mu_1d = _decision_visible_mu_1d(state.log_return_window, candidate.shape[0])
+        expected_alpha_horizon = compute_expected_alpha_horizon(
+            activity_protocol=_activity_protocol(self.config),
+            candidate_weights=candidate,
+            current_weights=current,
+            mu_1d_decision_visible=mu_1d,
+            horizon_config=mapping(section.get("gate_scoring")),
+        )
+        rho, scores, score_components, forced_hold_reason = self._rho_action(
             scheduler_allowed=scheduler_allowed,
             first_trade=first_trade,
+            agent_action=action,
             expected_return=expected_return,
+            expected_alpha_horizon=expected_alpha_horizon,
             estimated_turnover=turnover,
             estimated_cost=cost,
             cvar_loss_5=risk["cvar_loss_5"],
             drawdown=float(portfolio.current_drawdown_abs),
         )
         rho_values = _rho_values(self.config)
-        section = self._section()
         action_index = gate_action_index(rho_values, rho)
         violations = _constraint_violation_count(
             turnover=turnover,
@@ -157,8 +172,15 @@ class RiskAwareGTRCPOStrategy(BaseStrategy):
             "gate_action": int(rho > 0.0),
             "gate_action_index": int(action_index),
             "rho": float(rho),
+            "raw_rho": float(rho),
+            "raw_rebalance_intensity": float(rho),
+            "raw_model_requested_rebalance": bool(rho > 0.0),
+            "raw_gate_action_index": int(action_index),
             "rebalance_intensity": float(rho),
             "rebalance_values": json.dumps(scores, sort_keys=True, separators=(",", ":")),
+            "gate_score_components": json.dumps(score_components, sort_keys=True, separators=(",", ":")),
+            "gate_scoring_mode": str(_gate_scoring_config(self.config, "ra_gt_rcpo").get("mode", "normalized")),
+            "expected_alpha_horizon": float(expected_alpha_horizon),
             "q_hold": float(scores.get("0", scores.get("0.0", 0.0))),
             "q_rebalance": float(max((value for key, value in scores.items() if float(key) > 0.0), default=0.0)),
             "q_gap": float(
@@ -190,6 +212,12 @@ class RiskAwareGTRCPOStrategy(BaseStrategy):
             "value_cost": float(action["value_cost"]),
             "value_drawdown": float(action["value_drawdown"]),
             "value_cvar_loss": float(action["value_cvar_loss"]),
+            "rho_logits": json.dumps(action.get("rho_logits", []), separators=(",", ":")),
+            "rho_probs": json.dumps(action.get("rho_probs", []), separators=(",", ":")),
+            "rho_entropy": float(action.get("rho_entropy", np.nan)),
+            "rho_expected": float(action.get("rho_expected", np.nan)),
+            "rho_action_index": int(action.get("rho_action_index", action_index)),
+            "rho_policy_mode": str(section.get("rho_policy", "score_rho_normalized")),
             "lambda_turnover": float(section.get("lambda_turnover", 2.0)),
             "lambda_cost": float(section.get("lambda_cost", 10.0)),
             "lambda_cvar": float(section.get("lambda_cvar", 0.35)),
@@ -203,7 +231,7 @@ class RiskAwareGTRCPOStrategy(BaseStrategy):
         return self.validate_portfolio_action(
             PortfolioAction(
                 target_weights=candidate,
-                rebalance_action=1 if scheduler_allowed and rho > 0.0 else 0,
+                rebalance_action=1 if rho > 0.0 else 0,
                 rebalance_intensity=float(rho),
                 action_info=action_info,
             )
@@ -214,18 +242,36 @@ class RiskAwareGTRCPOStrategy(BaseStrategy):
         *,
         scheduler_allowed: bool,
         first_trade: bool,
+        agent_action: Mapping[str, Any],
         expected_return: float,
+        expected_alpha_horizon: float,
         estimated_turnover: float,
         estimated_cost: float,
         cvar_loss_5: float,
         drawdown: float,
-    ) -> tuple[float, dict[str, float], str | None]:
+    ) -> tuple[float, dict[str, float], dict[str, dict[str, float]], str | None]:
         rho_values = _rho_values(self.config)
-        if not scheduler_allowed:
-            return 0.0, {"0": 0.0}, "scheduler_blocked"
+        _ = scheduler_allowed
         if first_trade and bool(self._section().get("initial_build_full_rho", True)):
-            return 1.0, {str(value).rstrip("0").rstrip("."): float(value) for value in rho_values}, None
+            scores = {f"{float(value):.2f}".rstrip("0").rstrip("."): float(value) for value in rho_values}
+            return 1.0, scores, {}, None
         section = self._section()
+        if _uses_learned_rho(section):
+            rho = max(0.0, min(1.0, float(agent_action.get("raw_rho", agent_action.get("rho", 0.0)))))
+            key = f"{rho:.2f}".rstrip("0").rstrip(".")
+            return rho, {"0": 0.0, key: float(expected_alpha_horizon)}, {}, "model_chosen_hold" if rho == 0.0 else None
+        gate_scoring = _gate_scoring_config(self.config, "ra_gt_rcpo")
+        if str(gate_scoring.get("mode", "normalized")) == "normalized":
+            rho, scores, components = score_rho_normalized(
+                rho_values=rho_values,
+                expected_alpha=float(expected_alpha_horizon),
+                estimated_turnover=float(estimated_turnover),
+                estimated_cost=float(estimated_cost),
+                cvar_loss_5=float(cvar_loss_5),
+                drawdown=float(drawdown),
+                scale_config=gate_scoring,
+            )
+            return rho, scores, components, "model_chosen_hold" if rho == 0.0 else None
         rho, scores = choose_rho(
             rho_values=rho_values,
             expected_return=float(expected_return),
@@ -240,7 +286,7 @@ class RiskAwareGTRCPOStrategy(BaseStrategy):
             cvar_loss_budget=float(section.get("cvar_loss_budget", 0.02)),
             drawdown_budget=float(section.get("drawdown_budget", 0.10)),
         )
-        return rho, scores, "model_chosen_hold" if rho == 0.0 else None
+        return rho, scores, {}, "model_chosen_hold" if rho == 0.0 else None
 
     def _build_agent_for_current_name(self) -> None:
         model_name = str(self.strategy_name)
@@ -324,6 +370,59 @@ def _candidate_expected_return(candidate_weights: np.ndarray, log_return_window:
         return 0.0
     recent = np.nan_to_num(window[-min(20, window.shape[0]) :], nan=0.0, posinf=0.0, neginf=0.0)
     return float(np.dot(candidate_weights, np.mean(recent, axis=0)))
+
+
+def _decision_visible_mu_1d(log_return_window: Any, n_assets: int) -> np.ndarray:
+    window = np.asarray(log_return_window, dtype=float)
+    if window.ndim == 3:
+        window = window.reshape(window.shape[-2], window.shape[-1])
+    if window.ndim != 2 or window.shape[-1] != int(n_assets) or window.size == 0:
+        return np.zeros(int(n_assets), dtype=float)
+    recent = np.nan_to_num(window[-min(20, window.shape[0]) :], nan=0.0, posinf=0.0, neginf=0.0)
+    return np.mean(recent, axis=0)
+
+
+def _activity_protocol(config: Mapping[str, Any]) -> str:
+    activity = mapping(config.get("execution_activity"))
+    return str(activity.get("protocol", "monthly_gate"))
+
+
+def _gate_scoring_config(config: Mapping[str, Any], section_name: str) -> dict[str, Any]:
+    section = mapping(config.get(section_name))
+    gate = dict(mapping(section.get("gate_scoring")))
+    if "cvar_budget" not in gate and "cvar_loss_budget" in section:
+        gate["cvar_budget"] = section["cvar_loss_budget"]
+    if "drawdown_budget" not in gate and "drawdown_budget" in section:
+        gate["drawdown_budget"] = section["drawdown_budget"]
+    return gate
+
+
+def _uses_learned_rho(section: Mapping[str, Any]) -> bool:
+    return str(section.get("rho_policy", "score_rho_normalized")) in {"learned", "straight_through_gumbel_softmax_v1"}
+
+
+def _requires_formal_training_budget(config: Mapping[str, Any]) -> bool:
+    rankability = mapping(config.get("rankability"))
+    return bool(rankability.get("rankable_in_unified_table", False)) or str(
+        rankability.get("diagnostic_status", "")
+    ).lower() == "formal"
+
+
+def _formal_training_budget_status(
+    config: Mapping[str, Any],
+    section: Mapping[str, Any],
+    env_steps: int,
+    gradient_updates: int,
+) -> str:
+    activity = mapping(config.get("execution_activity"))
+    enforce = bool(activity.get("activity_gate_enforced", False)) and _uses_learned_rho(section)
+    if not enforce or not _requires_formal_training_budget(config):
+        return "completed"
+    min_updates = int(section.get("min_gradient_updates_for_formal", 128))
+    min_steps = int(section.get("min_env_steps_for_formal", 2048))
+    if int(gradient_updates) < min_updates or int(env_steps) < min_steps:
+        return "failed_insufficient_training_budget"
+    return "completed"
 
 
 def _constraint_violation_count(

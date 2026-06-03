@@ -240,6 +240,8 @@ ABLATION_IGNORED_PATH_PREFIXES = (
     "security.",
     "data_governance.",
     "training.checkpoint_include_replay_buffer",
+    "execution_activity.",
+    "rebalance.",
 )
 MATRIX_OUTPUT_NAMES = {
     "transaction_cost_sensitivity": "transaction_cost_sensitivity",
@@ -408,7 +410,7 @@ class HPOExperiment(BaseExperiment):
                 split_override=split_override,
             )
         metric = str(trial_config.get("hpo", {}).get("metric") or "validation_metric")
-        result["validation_metric"] = objective_metric(result, metric)
+        result["validation_metric"] = objective_metric(result, metric, config=trial_config)
         result["objective_value"] = result["validation_metric"]
         result["train_split"] = train_split
         result["validation_split"] = validation_split

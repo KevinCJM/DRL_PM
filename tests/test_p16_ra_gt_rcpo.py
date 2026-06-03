@@ -6,7 +6,7 @@ import torch
 
 from src.agents.constrained_actor_critic_agent import ConstrainedActorCriticAgent, agent_config_from_mapping
 from src.baselines.deep_training import DeepBaselineTrainingBatch
-from src.baselines.risk_aware_gt_rcpo import RiskAwareGTRCPOStrategy
+from src.baselines.risk_aware_gt_rcpo import RiskAwareGTRCPOStrategy, _formal_training_budget_status
 from src.config import ConfigLoader, DEFAULT_CONFIG, PROJECT_ROOT
 from src.envs.state import DecisionMarketState, PortfolioState
 from src.experiments.pipeline import _new_model_artifacts
@@ -32,14 +32,34 @@ def test_p16_model_trains_with_real_gradient_updates():
     assert float(history["validation_metric"].iloc[-1]) == float(history["validation_metric"].iloc[-1])
 
 
-def test_p16_action_uses_candidate_plus_rho_execution_core_and_scheduler_mask():
-    strategy = RiskAwareGTRCPOStrategy(_strategy_config())
+def test_p16_action_emits_raw_rho_before_scheduler_finalization():
+    config = _strategy_config()
+    config["ra_gt_rcpo"]["rho_policy"] = "straight_through_gumbel_softmax_v1"
+    strategy = RiskAwareGTRCPOStrategy(config)
+    strategy._agent.select_action = lambda *_args: {
+        "candidate_weights": np.array([0.2, 0.8]),
+        "raw_rho": 0.5,
+        "rho": 0.5,
+        "rho_action_index": 2,
+        "rho_probs": [0.0, 0.0, 1.0, 0.0, 0.0],
+        "rho_logits": [-10.0, -10.0, 10.0, -10.0, -10.0],
+        "rho_entropy": 0.0,
+        "rho_expected": 0.5,
+        "graph_density": 0.0,
+        "mean_abs_correlation": 0.0,
+        "value_return": 0.0,
+        "value_cost": 0.0,
+        "value_drawdown": 0.0,
+        "value_cvar_loss": 0.0,
+    }
     strategy.set_decision_context(scheduler_allowed_rebalance=False, scheduler_pre_allowed=False, first_trade=False)
 
     action = strategy.compute_target_weights(_decision_state(), _portfolio_state())
 
-    assert action.rebalance_action == 0
-    assert action.rebalance_intensity == 0.0
+    assert action.rebalance_action == 1
+    assert action.rebalance_intensity == 0.5
+    assert action.action_info["raw_rho"] == 0.5
+    assert action.action_info["raw_model_requested_rebalance"] is True
     assert action.action_info["execution_weight_mode"] == "candidate_plus_rho_execution_core"
     assert action.action_info["model_extension_id"] == RA_GT_RCPO_MODEL_EXTENSION_ID
     assert action.action_info["graph_feature_mode"] == "decision_visible_rolling_correlation"
@@ -74,6 +94,22 @@ def test_p16_configs_load_and_models_are_registered():
     assert expected.issubset(NATIVE_HPO_MODEL_NAMES)
     cfg = ConfigLoader.load(PROJECT_ROOT / "configs/paper/p16_ra_gt_rcpo_smoke.yaml")
     assert type(ExperimentRegistry().create_experiment(cfg)).__name__ == "BaselineComparisonExperiment"
+
+
+def test_p16_formal_budget_gate_only_applies_to_formal_runs():
+    config = _strategy_config()
+    config["ra_gt_rcpo"]["rho_policy"] = "straight_through_gumbel_softmax_v1"
+    config["execution_activity"]["activity_gate_enforced"] = True
+
+    assert _formal_training_budget_status(config, config["ra_gt_rcpo"], env_steps=32, gradient_updates=8) == "completed"
+
+    config["rankability"]["rankable_in_unified_table"] = True
+    config["rankability"]["diagnostic_status"] = "formal"
+
+    assert (
+        _formal_training_budget_status(config, config["ra_gt_rcpo"], env_steps=32, gradient_updates=8)
+        == "failed_insufficient_training_budget"
+    )
 
 
 def test_p16_sidecar_artifacts_are_separate_from_p12_p13_extension():

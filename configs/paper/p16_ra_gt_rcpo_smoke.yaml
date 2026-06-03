@@ -30,6 +30,21 @@ baselines:
     max_gradient_updates_per_epoch: 8
 ra_gt_rcpo:
   enabled: true
+  rho_policy: straight_through_gumbel_softmax_v1
+  rho_actions:
+  - 0.0
+  - 0.25
+  - 0.5
+  - 0.75
+  - 1.0
+  rho_temperature:
+    tau_start: 1.0
+    tau_end: 0.2
+    tau_decay_steps: 2048
+    eval_mode: argmax
+    min_entropy_threshold: 0.05
+  min_gradient_updates_for_formal: 128
+  min_env_steps_for_formal: 2048
 hpo:
   enabled: false
 new_model_protocol:
@@ -58,3 +73,13 @@ rankability:
 security:
   path_whitelist:
   - /Users/chenjunming/Desktop/DRL_PM
+rebalance:
+  mode: daily
+execution_activity:
+  protocol: daily_gate_with_cost_constraint
+  scheduler_blocks_model_actions: false
+  activity_gate_enforced: true
+  turnover_optimization_protocol_id: turnover_active_v1
+  min_model_rebalance_hit_rate: 0.05
+  max_model_rebalance_hit_rate: 0.6
+  min_non_initial_turnover_per_opportunity: 0.002

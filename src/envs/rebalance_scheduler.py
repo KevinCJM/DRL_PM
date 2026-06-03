@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -31,6 +32,13 @@ FIRST_CALENDAR_RULES = {"first", "first_trading_day", "period_start"}
 LAST_CALENDAR_RULES = {"last", "last_trading_day", "period_end"}
 TRADING_DAYS_PER_YEAR = 252.0
 WEIGHT_EPS = 1.0e-12
+
+
+@dataclass(frozen=True)
+class SchedulerDecisionEvaluation:
+    scheduler_pre_allowed: bool
+    scheduler_post_allowed: bool
+    scheduler_final_allowed: bool
 
 
 class RebalanceScheduler:
@@ -134,6 +142,52 @@ class RebalanceScheduler:
             self._last_allowed_date = current_date
             self._has_rebalanced = True
         return bool(scheduler_allowed)
+
+    def evaluate_pre_post_no_mutation(
+        self,
+        date: Any,
+        portfolio_state: PortfolioState,
+        decision_market_state: DecisionMarketState,
+        strategy_state: Any | None = None,
+        candidate_weights: np.ndarray | None = None,
+    ) -> SchedulerDecisionEvaluation:
+        current_date = _timestamp(date)
+        scheduler_pre_allowed = self.pre_check(
+            current_date,
+            portfolio_state,
+            decision_market_state,
+            strategy_state,
+        )
+        scheduler_post_allowed = False
+        if scheduler_pre_allowed:
+            scheduler_post_allowed = self.post_check(
+                current_date,
+                portfolio_state,
+                decision_market_state,
+                strategy_state,
+                candidate_weights,
+            )
+        return SchedulerDecisionEvaluation(
+            scheduler_pre_allowed=bool(scheduler_pre_allowed),
+            scheduler_post_allowed=bool(scheduler_post_allowed),
+            scheduler_final_allowed=bool(scheduler_pre_allowed and scheduler_post_allowed),
+        )
+
+    def commit_scheduler_decision(
+        self,
+        decision_ts: Any,
+        *,
+        scheduler_pre_allowed: bool,
+        scheduler_post_allowed: bool,
+        scheduler_final_allowed: bool,
+        raw_model_requested_rebalance: bool,
+        final_action: bool | int,
+        execution_accepted: bool,
+    ) -> None:
+        _ = bool(raw_model_requested_rebalance), bool(final_action), bool(execution_accepted)
+        if bool(scheduler_pre_allowed) and bool(scheduler_post_allowed) and bool(scheduler_final_allowed):
+            self._last_allowed_date = _timestamp(decision_ts)
+            self._has_rebalanced = True
 
     @staticmethod
     def final_rebalance_action(scheduler_allowed: bool, gate_action: int | bool) -> int:

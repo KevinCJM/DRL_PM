@@ -530,6 +530,58 @@ def test_hpo_equal_budget_runs_all_trainable_models(tmp_path, monkeypatch):
     assert search_manifest["log_scale"].tolist() == [True, True]
 
 
+def test_hpo_equal_budget_diagnostic_continues_after_failed_model(tmp_path, monkeypatch):
+    config = _config(tmp_path, "main_model")
+    config["hpo"]["enabled"] = True
+    config["hpo"]["equal_budget_across_models"] = True
+    config["hpo"]["run_mode"] = "diagnostic"
+    config["hpo"]["trainable_models"] = ["model_a", "model_b"]
+    config["hpo"]["direction"] = "maximize"
+    config["output"]["run_name"] = "hpo_equal_budget_diagnostic"
+    experiment = ExperimentRegistry().create_experiment(
+        config,
+        device="cpu",
+        run_dir=tmp_path / "hpo_equal_budget_diagnostic",
+    )
+
+    def fake_run_hpo_single(child_experiment):
+        model_name = child_experiment.active_model_name
+        if model_name == "model_a":
+            raise RuntimeError("failed_low_trade_activity")
+        trials = pd.DataFrame([{column: "" for column in run_experiment.HPO_TRIAL_COLUMNS}], dtype=object)
+        trials.loc[0, "model_name"] = model_name
+        trials.loc[0, "study_name"] = child_experiment.config["hpo"]["study_name"]
+        trials.loc[0, "trial_number"] = 0
+        trials.loc[0, "state"] = "complete"
+        trials.loc[0, "objective_value"] = 1.0
+        return {
+            "status": "completed",
+            "hpo_model_name": model_name,
+            "study_name": child_experiment.config["hpo"]["study_name"],
+            "best_trial_number": 0,
+            "best_value": 1.0,
+            "best_params": {},
+            "trial_count": 1,
+            "hpo_trials": trials,
+            "metrics": {"sharpe": 1.0},
+            "daily_returns": pd.DataFrame({"date": ["2024-01-02"], "net_return": [0.01], "nav": [1.01]}),
+            "daily_costs": pd.DataFrame({"date": ["2024-01-02"], "total_transaction_cost": [0.001]}),
+        }
+
+    monkeypatch.setattr(run_experiment, "_run_hpo_single", fake_run_hpo_single)
+
+    result = run_experiment.run_hpo(experiment)
+
+    assert result["status"] == "completed"
+    assert result["diagnostic_status"] == "partial_diagnostic"
+    assert result["failed_child_model_id"] == "model_a"
+    assert result["best_model_name"] == "model_b"
+    assert [item["status"] for item in result["hpo_model_results"]] == ["failed", "completed"]
+    assert set(result["hpo_model_final_comparison"]["model_name"]) == {"model_a", "model_b"}
+    persisted_trials = pd.read_csv(tmp_path / "hpo_equal_budget_diagnostic" / "logs" / "hpo_trials.csv")
+    assert set(persisted_trials["model_name"]) == {"model_b"}
+
+
 def test_hpo_explicit_trainable_models_are_not_filtered_by_native_only(tmp_path):
     config = _config(tmp_path, "main_model")
     config["hpo"]["trainable_models"] = [

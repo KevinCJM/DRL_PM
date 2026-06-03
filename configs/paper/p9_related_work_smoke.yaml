@@ -78,3 +78,13 @@ rankability:
 security:
   path_whitelist:
   - /Users/chenjunming/Desktop/DRL_PM
+rebalance:
+  mode: daily
+execution_activity:
+  protocol: daily_gate_with_cost_constraint
+  scheduler_blocks_model_actions: false
+  activity_gate_enforced: true
+  turnover_optimization_protocol_id: turnover_active_v1
+  min_model_rebalance_hit_rate: 0.05
+  max_model_rebalance_hit_rate: 0.6
+  min_non_initial_turnover_per_opportunity: 0.002

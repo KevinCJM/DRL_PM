@@ -460,7 +460,16 @@ def test_paper_aggregate_generates_main_stats_and_seed_summary(tmp_path):
     metrics_dir.mkdir(parents=True)
     logs_dir.mkdir(parents=True)
     (logs_dir / "run_manifest.json").write_text(
-        json.dumps({"run_name": "run_s42", "seed": 42}),
+        json.dumps(
+            {
+                "run_name": "run_s42",
+                "seed": 42,
+                "execution_activity": {
+                    "protocol": "daily_gate_with_cost_constraint",
+                    "turnover_optimization_protocol_id": "turnover_active_v1",
+                },
+            }
+        ),
         encoding="utf-8",
     )
     pd.DataFrame(
@@ -517,11 +526,13 @@ def test_paper_aggregate_generates_main_stats_and_seed_summary(tmp_path):
     main = pd.read_csv(outputs["paper_main_comparison"])
     stats = pd.read_csv(outputs["paper_paired_statistics"])
     seed_summary = pd.read_csv(outputs["paper_seed_summary"])
+    turnover_activity = pd.read_csv(outputs["paper_turnover_activity_summary"])
     assert set(outputs) == {
         "paper_main_comparison",
         "paper_diagnostic_comparison",
         "paper_paired_statistics",
         "paper_seed_summary",
+        "paper_turnover_activity_summary",
         "closest_hybrid_figure_source",
         "paper_aggregate_dedup_report",
         "source_run_dirs",
@@ -529,6 +540,8 @@ def test_paper_aggregate_generates_main_stats_and_seed_summary(tmp_path):
         "paper_aggregate_manifest",
     }
     assert "n_unique_return_series" in set(seed_summary.columns)
+    assert "avg_turnover" in set(turnover_activity.columns)
+    assert "daily_gate_with_cost_constraint" in set(turnover_activity["activity_protocol"].dropna())
     assert "model" in set(main["model_name"])
     assert "model" in set(main["paper_model_id"])
     assert "hybrid_dqn_optimizer_equal_weight" in set(main["paper_model_id"])

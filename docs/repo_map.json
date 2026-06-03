@@ -273,7 +273,138 @@
       "scope_notes": [
         "no parent-level config may be assumed"
       ],
-      "notes": []
+      "notes": [],
+      "grounding": {
+        "fact_status": "mixed",
+        "evidence": [
+          "configs/paper",
+          "src/config.py",
+          "tests/test_config.py"
+        ],
+        "unsampled_paths": []
+      }
+    },
+    {
+      "id": "ai_routing_governance",
+      "name": "ai-routing-governance",
+      "path": {
+        "kind": "dir",
+        "ref": "docs"
+      },
+      "kind": "module_family",
+      "purpose": [
+        "AI Hermes routing memory",
+        "module route and pitfall governance"
+      ],
+      "task_keywords": [
+        "routing",
+        "repo_map",
+        "task_routes",
+        "pitfalls",
+        "ai hermes",
+        "self evolve"
+      ],
+      "entry_files": [
+        {
+          "kind": "file",
+          "ref": "docs/repo_map.json"
+        },
+        {
+          "kind": "file",
+          "ref": "docs/task_routes.json"
+        },
+        {
+          "kind": "file",
+          "ref": "docs/pitfalls.json"
+        }
+      ],
+      "key_symbols": [
+        "schema_version",
+        "routing_merge_contract"
+      ],
+      "first_read_files": [
+        {
+          "kind": "file",
+          "ref": "docs/repo_map.json"
+        },
+        {
+          "kind": "file",
+          "ref": "docs/task_routes.json"
+        },
+        {
+          "kind": "file",
+          "ref": "docs/pitfalls.json"
+        }
+      ],
+      "then_check_files": [
+        {
+          "kind": "file",
+          "ref": "AGENTS.md"
+        }
+      ],
+      "upstream_dependencies": [],
+      "downstream_dependencies": [],
+      "out_of_scope_dependencies": [],
+      "related_tests": [],
+      "related_configs": [],
+      "risk_flags": [
+        "routing_coverage_drift",
+        "routing_validation_contract_drift"
+      ],
+      "edit_risk": "medium",
+      "blast_radius": [
+        "future agent routing",
+        "minimum regression selection",
+        "pitfall discovery"
+      ],
+      "pitfall_ids": [],
+      "minimum_regression": [
+        {
+          "kind": "command",
+          "ref": "python3 -m json.tool docs/repo_map.json"
+        },
+        {
+          "kind": "command",
+          "ref": "python3 -m json.tool docs/task_routes.json"
+        },
+        {
+          "kind": "command",
+          "ref": "python3 -m json.tool docs/pitfalls.json"
+        }
+      ],
+      "read_before_edit": [
+        {
+          "kind": "file",
+          "ref": "docs/repo_map.json"
+        },
+        {
+          "kind": "file",
+          "ref": "docs/task_routes.json"
+        },
+        {
+          "kind": "file",
+          "ref": "docs/pitfalls.json"
+        }
+      ],
+      "routing_confidence": "grounded",
+      "expand_search_when": [
+        "changed files are reported uncovered by evolve_ai_routing",
+        "new hidden contracts or recurring pitfalls are discovered"
+      ],
+      "scope_notes": [
+        "routing facts must stay inside the current subtree"
+      ],
+      "notes": [],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "docs/repo_map.json",
+          "docs/task_routes.json",
+          "docs/pitfalls.json",
+          "AGENTS.md"
+        ],
+        "unsampled_paths": []
+      }
     },
     {
       "id": "data_pipeline_family",
@@ -642,7 +773,16 @@
       "scope_notes": [
         "callers outside visible subtree are out_of_scope"
       ],
-      "notes": []
+      "notes": [],
+      "grounding": {
+        "fact_status": "mixed",
+        "evidence": [
+          "src/envs",
+          "tests/test_outputs.py",
+          "tests/test_turnover_activity_gate.py"
+        ],
+        "unsampled_paths": []
+      }
     },
     {
       "id": "model_partial_rebalance_family",
@@ -794,7 +934,15 @@
       "scope_notes": [
         "torch internals are out_of_scope"
       ],
-      "notes": []
+      "notes": [],
+      "grounding": {
+        "fact_status": "mixed",
+        "evidence": [
+          "src/models",
+          "tests/test_p16_learned_rho.py"
+        ],
+        "unsampled_paths": []
+      }
     },
     {
       "id": "agent_training_family",
@@ -936,7 +1084,8 @@
       "risk_flags": [
         "agent_model_env_contract",
         "checkpoint_compatibility",
-        "device_specific_behavior"
+        "device_specific_behavior",
+        "raw_final_rebalance_diagnostics_passthrough"
       ],
       "edit_risk": "high",
       "blast_radius": [
@@ -946,7 +1095,8 @@
       ],
       "pitfall_ids": [
         "P02",
-        "P06"
+        "P06",
+        "P07"
       ],
       "minimum_regression": [
         {
@@ -968,7 +1118,16 @@
       ],
       "notes": [
         "needs_code_confirmation for key symbols until file content is re-opened"
-      ]
+      ],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "src/agents",
+          "src/agents/ppo_agent.py",
+          "tests/test_agents.py"
+        ],
+        "unsampled_paths": []
+      }
     },
     {
       "id": "baseline_family",
@@ -990,7 +1149,15 @@
         "risk parity",
         "equal weight",
         "eiie",
-        "buy and hold"
+        "buy and hold",
+        "rebalance gate",
+        "raw gate",
+        "final action",
+        "turnover threshold",
+        "dqn_only",
+        "bernoulli_gated_ppo",
+        "native_dqn_template",
+        "gt_rcpo_lite"
       ],
       "entry_files": [
         {
@@ -1008,7 +1175,9 @@
       ],
       "key_symbols": [
         "BaseStrategy",
-        "TraditionalStrategyBase"
+        "TraditionalStrategyBase",
+        "_continuous_weight_rebalance_decision",
+        "_binary_gate_rebalance_decision"
       ],
       "first_read_files": [
         {
@@ -1028,6 +1197,26 @@
         {
           "kind": "file",
           "ref": "src/baselines/eiie.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/bernoulli_gated_ppo.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/dqn_only.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/native_bernoulli_gated_ppo.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/native_dqn_template.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/gt_rcpo_lite.py"
         },
         {
           "kind": "file",
@@ -1072,6 +1261,10 @@
         {
           "kind": "file",
           "ref": "tests/test_baseline_output_schema.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_p12_p13_new_models.py"
         }
       ],
       "related_configs": [
@@ -1086,7 +1279,10 @@
       ],
       "risk_flags": [
         "strategy_action_contract",
-        "output_schema_coupling"
+        "output_schema_coupling",
+        "raw_final_rebalance_gate_semantics",
+        "template_action_gate_semantics",
+        "initial_hold_build_semantics"
       ],
       "edit_risk": "medium",
       "blast_radius": [
@@ -1096,7 +1292,8 @@
       ],
       "pitfall_ids": [
         "P02",
-        "P04"
+        "P04",
+        "P07"
       ],
       "minimum_regression": [
         {
@@ -1116,7 +1313,24 @@
       "scope_notes": [
         "family routed from representative files; inspect concrete baseline before edit"
       ],
-      "notes": []
+      "notes": [],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "src/baselines",
+          "src/baselines/eiie.py",
+          "src/baselines/bernoulli_gated_ppo.py",
+          "src/baselines/dqn_only.py",
+          "src/baselines/gt_rcpo_lite.py",
+          "src/baselines/native_bernoulli_gated_ppo.py",
+          "src/baselines/native_dqn_template.py",
+          "tests/test_baselines.py",
+          "tests/test_cage_gate_scoring.py",
+          "tests/test_p12_p13_new_models.py",
+          "tests/test_p16_ra_gt_rcpo.py"
+        ],
+        "unsampled_paths": []
+      }
     },
     {
       "id": "experiment_pipeline_family",
@@ -1281,7 +1495,21 @@
       ],
       "notes": [
         "needs_code_confirmation for key symbols until file content is re-opened"
-      ]
+      ],
+      "grounding": {
+        "fact_status": "mixed",
+        "evidence": [
+          "src/experiments",
+          "src/utils/logger.py",
+          "tests/test_experiments.py",
+          "tests/test_formal_readiness.py",
+          "tests/test_hpo_activity_metric.py",
+          "tests/test_outputs.py",
+          "tests/test_p12_p13_promotion_gate.py",
+          "tests/test_paper_aggregate.py"
+        ],
+        "unsampled_paths": []
+      }
     },
     {
       "id": "ops_scripts_family",
@@ -1425,7 +1653,14 @@
       "scope_notes": [
         "remote data service behavior is out_of_scope"
       ],
-      "notes": []
+      "notes": [],
+      "grounding": {
+        "fact_status": "mixed",
+        "evidence": [
+          "scripts/"
+        ],
+        "unsampled_paths": []
+      }
     }
   ]
 }

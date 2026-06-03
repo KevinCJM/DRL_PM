@@ -190,6 +190,74 @@ def test_paper_aggregate_excludes_explicit_paper_models(tmp_path):
     assert manifest["exclude_models"] == ["unpromoted_model"]
 
 
+def test_paper_aggregate_demotes_active_hpo_final_low_activity(tmp_path):
+    run_dir = tmp_path / "results" / "formal_hpo_low_activity"
+    metrics_dir = run_dir / "metrics"
+    logs_dir = run_dir / "logs"
+    metrics_dir.mkdir(parents=True)
+    logs_dir.mkdir(parents=True)
+    (logs_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "run_name": "formal_hpo_low_activity",
+                "experiment_type": "hyperparameter_sweep",
+                "seed": 42,
+                "execution_activity": {
+                    "protocol": "daily_gate_with_cost_constraint",
+                    "activity_gate_enforced": True,
+                    "min_model_rebalance_hit_rate": 0.05,
+                    "max_model_rebalance_hit_rate": 0.6,
+                    "min_non_initial_turnover_per_opportunity": 0.002,
+                    "max_average_turnover": 0.03,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    pd.DataFrame(
+        [
+            {
+                "model_name": "full_dqn_gated_multitask_cnn_ppo",
+                "hpo_model_name": "full_dqn_gated_multitask_cnn_ppo",
+                "baseline_family": "new_model_extension",
+                "seed": 42,
+                "rankable_in_unified_table": True,
+                "model_rebalance_hit_rate": 0.0,
+                "non_initial_turnover_per_opportunity": 0.0,
+                "average_turnover": 0.0,
+                "sharpe": 2.0,
+            },
+            {
+                "model_name": "full_dqn_gated_multitask_cnn_ppo",
+                "hpo_model_name": "full_dqn_gated_multitask_cnn_ppo",
+                "baseline_family": "new_model_extension",
+                "seed": 123,
+                "rankable_in_unified_table": True,
+                "model_rebalance_hit_rate": 0.08,
+                "non_initial_turnover_per_opportunity": 0.004,
+                "average_turnover": 0.01,
+                "sharpe": 1.7,
+            },
+            {
+                "model_name": "equal_weight",
+                "baseline_family": "traditional",
+                "seed": 42,
+                "rankable_in_unified_table": True,
+                "sharpe": 0.5,
+            },
+        ]
+    ).to_csv(metrics_dir / "hpo_model_final_comparison.csv", index=False)
+
+    outputs = aggregate_paper_results([run_dir], tmp_path / "paper", benchmark_model="equal_weight")
+
+    main = pd.read_csv(outputs["paper_main_comparison"])
+    diagnostic = pd.read_csv(outputs["paper_diagnostic_comparison"])
+    assert set(main["paper_model_id"]) == {"equal_weight"}
+    target_diag = diagnostic.loc[diagnostic["paper_model_id"].eq("full_dqn_gated_multitask_cnn_ppo")]
+    assert target_diag.shape[0] == 2
+    assert set(target_diag["reason"]) == {"failed_low_trade_activity", "failed_low_trade_activity_group"}
+
+
 def test_closest_hybrid_figure_source_uses_only_rankable_platform_rows(tmp_path):
     trainable_ids = ("ppo_dqn_hierarchical_reimplementation", *HYBRID_CHILDREN)
     rows = [

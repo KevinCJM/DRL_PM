@@ -129,7 +129,7 @@ class BacktestResult:
     daily_turnover: pd.DataFrame
     daily_rebalance: pd.DataFrame
     daily_costs: pd.DataFrame
-    metrics: dict[str, float]
+    metrics: dict[str, Any]
     run_manifest: dict[str, Any]
     portfolio_state: PortfolioState
     baseline_daily_diagnostics: pd.DataFrame = field(default_factory=pd.DataFrame)
@@ -171,6 +171,7 @@ class BacktestEngine:
         if config is not None:
             _deep_update(self.config, config)
         self.execution_config = self.config["execution_model"]
+        self.execution_activity_config = _execution_activity_config(self.config)
         self.portfolio_config = self.config["portfolio"]
         self.execution_core = execution_core or PortfolioExecutionCore(self.config)
         self.scheduler = scheduler
@@ -228,22 +229,24 @@ class BacktestEngine:
                 market_image_dataset=self.market_image_dataset,
             )
             scheduler_pre_allowed = scheduler.pre_check(decision_date, portfolio_state, decision_state)
-            action = _action_for_step(strategy, decision_state, portfolio_state, scheduler_pre_allowed, first_trade)
-            if first_trade:
-                final_action = 1
-                _mark_scheduler_rebalanced(scheduler, decision_date)
-            elif scheduler_pre_allowed:
-                final_action = RebalanceScheduler.final_rebalance_action(
-                    scheduler.should_rebalance(
-                        decision_date,
-                        portfolio_state,
-                        decision_state,
-                        candidate_weights=action.target_weights,
-                    ),
-                    action.rebalance_action,
-                )
-            else:
-                final_action = 0
+            action = _action_for_step(
+                strategy,
+                decision_state,
+                portfolio_state,
+                scheduler_pre_allowed,
+                first_trade,
+                scheduler_blocks_model_actions=bool(self.execution_activity_config["scheduler_blocks_model_actions"]),
+            )
+            action = _finalize_execution_action(
+                scheduler,
+                decision_date,
+                portfolio_state,
+                decision_state,
+                action,
+                first_trade,
+                self.execution_activity_config,
+            )
+            final_action = action.rebalance_action
 
             execution_state = self.execution_core.build_execution_market_state(dataset, decision_date)
             execution_result = self._execute_step(
@@ -268,7 +271,7 @@ class BacktestEngine:
             daily_turnover.append(_daily_turnover_record(record_context, final_action))
             daily_rebalance.append(_daily_rebalance_record(record_context, final_action))
             daily_costs.append(_daily_costs_record(record_context))
-            if _has_paper_model_id(action.action_info.get("paper_model_id")):
+            if _should_record_daily_diagnostics(action, self.execution_activity_config):
                 daily_diagnostics.append(_baseline_diagnostics_record(record_context))
             daily_weights.extend(
                 _daily_weights_records(
@@ -287,7 +290,7 @@ class BacktestEngine:
             daily_rebalance=pd.DataFrame(daily_rebalance, columns=DAILY_REBALANCE_COLUMNS),
             daily_costs=pd.DataFrame(daily_costs, columns=DAILY_COSTS_COLUMNS),
             baseline_daily_diagnostics=pd.DataFrame(daily_diagnostics),
-            metrics=_metrics(daily_returns, daily_turnover, daily_costs),
+            metrics=_metrics(daily_returns, daily_turnover, daily_costs, daily_diagnostics),
             run_manifest=self._run_manifest(dataset),
             portfolio_state=portfolio_state,
         )
@@ -364,7 +367,7 @@ class BacktestEngine:
                 daily_turnover.append(_daily_turnover_record(record_context, pending_action.rebalance_action))
                 daily_rebalance.append(_daily_rebalance_record(record_context, pending_action.rebalance_action))
                 daily_costs.append(_daily_costs_record(record_context))
-                if _has_paper_model_id(action.action_info.get("paper_model_id")):
+                if _should_record_daily_diagnostics(action, self.execution_activity_config):
                     daily_diagnostics.append(_baseline_diagnostics_record(record_context))
                 daily_weights.extend(
                     _daily_weights_records(
@@ -386,22 +389,24 @@ class BacktestEngine:
                 market_image_dataset=self.market_image_dataset,
             )
             scheduler_pre_allowed = scheduler.pre_check(current_date, portfolio_state, decision_state)
-            action = _action_for_step(strategy, decision_state, portfolio_state, scheduler_pre_allowed, first_trade)
-            if first_trade:
-                final_action = 1
-                _mark_scheduler_rebalanced(scheduler, current_date)
-            elif scheduler_pre_allowed:
-                final_action = RebalanceScheduler.final_rebalance_action(
-                    scheduler.should_rebalance(
-                        current_date,
-                        portfolio_state,
-                        decision_state,
-                        candidate_weights=action.target_weights,
-                    ),
-                    action.rebalance_action,
-                )
-            else:
-                final_action = 0
+            action = _action_for_step(
+                strategy,
+                decision_state,
+                portfolio_state,
+                scheduler_pre_allowed,
+                first_trade,
+                scheduler_blocks_model_actions=bool(self.execution_activity_config["scheduler_blocks_model_actions"]),
+            )
+            action = _finalize_execution_action(
+                scheduler,
+                current_date,
+                portfolio_state,
+                decision_state,
+                action,
+                first_trade,
+                self.execution_activity_config,
+            )
+            final_action = action.rebalance_action
 
             pending_action = _pending_action_for(
                 action,
@@ -426,7 +431,7 @@ class BacktestEngine:
             daily_rebalance=pd.DataFrame(daily_rebalance, columns=DAILY_REBALANCE_COLUMNS),
             daily_costs=pd.DataFrame(daily_costs, columns=DAILY_COSTS_COLUMNS),
             baseline_daily_diagnostics=pd.DataFrame(daily_diagnostics),
-            metrics=_metrics(daily_returns, daily_turnover, daily_costs),
+            metrics=_metrics(daily_returns, daily_turnover, daily_costs, daily_diagnostics),
             run_manifest=self._run_manifest(dataset),
             portfolio_state=portfolio_state,
         )
@@ -472,12 +477,12 @@ class BacktestEngine:
                     action.target_weights,
                     execution_state,
                     portfolio_state,
-                rebalance_action=final_action,
-                rebalance_intensity=action.rebalance_intensity,
-                asset_ids=list(asset_ids),
-                estimated_turnover=action.action_info.get("estimated_turnover"),
-                estimated_cost=action.action_info.get("estimated_cost"),
-            )
+                    rebalance_action=final_action,
+                    rebalance_intensity=action.rebalance_intensity,
+                    asset_ids=list(asset_ids),
+                    estimated_turnover=action.action_info.get("estimated_turnover"),
+                    estimated_cost=action.action_info.get("estimated_cost"),
+                )
             finally:
                 self.execution_core.cost_model = original_cost_model
             result.info["initial_build_cost"] = False
@@ -530,6 +535,7 @@ class BacktestEngine:
             "t_plus_one": bool(self.execution_config.get("t_plus_one", False)),
             "amount_is_proxy": bool(dataset.data_manifest.get("amount_is_proxy", False)),
             "initial_build_cost": bool(self.execution_config.get("initial_build_cost", True)),
+            "execution_activity": deepcopy(self.execution_activity_config),
         }
         if self._pending_truncation_count:
             manifest["pending_action_truncation_count"] = int(self._pending_truncation_count)
@@ -543,11 +549,25 @@ def _action_for_step(
     portfolio_state: PortfolioState,
     scheduler_allowed: bool,
     first_trade: bool,
+    *,
+    scheduler_blocks_model_actions: bool = True,
 ) -> PortfolioAction:
-    if not scheduler_allowed and not first_trade and not _requires_daily_diagnostics(strategy):
+    if (
+        bool(scheduler_blocks_model_actions)
+        and not scheduler_allowed
+        and not first_trade
+        and not _requires_daily_diagnostics(strategy)
+    ):
         return PortfolioAction(portfolio_state.current_weights.copy(), 0, 0.0, {})
     try:
-        _set_strategy_decision_context(strategy, decision_state, portfolio_state, scheduler_allowed, first_trade)
+        _set_strategy_decision_context(
+            strategy,
+            decision_state,
+            portfolio_state,
+            scheduler_allowed,
+            first_trade,
+            scheduler_blocks_model_actions=scheduler_blocks_model_actions,
+        )
         action = strategy.compute_target_weights(decision_state, portfolio_state)
         if not isinstance(action, PortfolioAction):
             raise DataContractError(
@@ -567,17 +587,20 @@ def _set_strategy_decision_context(
     portfolio_state: PortfolioState,
     scheduler_allowed: bool,
     first_trade: bool,
+    *,
+    scheduler_blocks_model_actions: bool = True,
 ) -> None:
     setter = getattr(strategy, "set_decision_context", None)
     if not callable(setter):
         return
-    scheduler_allowed_rebalance = bool(scheduler_allowed or first_trade)
+    scheduler_allowed_rebalance = bool((not scheduler_blocks_model_actions) or scheduler_allowed or first_trade)
     setter(
         scheduler_allowed_rebalance=scheduler_allowed_rebalance,
         scheduler_pre_allowed=bool(scheduler_allowed),
         first_trade=bool(first_trade),
         decision_date=pd.Timestamp(decision_state.decision_date),
         portfolio_step_index=int(portfolio_state.step_index),
+        scheduler_blocks_model_actions=bool(scheduler_blocks_model_actions),
     )
 
 
@@ -848,6 +871,158 @@ def _mark_scheduler_rebalanced(scheduler: RebalanceScheduler, date: pd.Timestamp
     scheduler._has_rebalanced = True
 
 
+def _finalize_execution_action(
+    scheduler: RebalanceScheduler,
+    decision_date: pd.Timestamp,
+    portfolio_state: PortfolioState,
+    decision_state: DecisionMarketState,
+    action: PortfolioAction,
+    first_trade: bool,
+    execution_activity_config: Mapping[str, Any],
+) -> PortfolioAction:
+    evaluation = scheduler.evaluate_pre_post_no_mutation(
+        decision_date,
+        portfolio_state,
+        decision_state,
+        candidate_weights=action.target_weights,
+    )
+    scheduler_blocks = bool(execution_activity_config["scheduler_blocks_model_actions"])
+    protocol = str(execution_activity_config["protocol"])
+    action_info = dict(action.action_info)
+    raw_rho = _raw_rebalance_intensity(action)
+    raw_model_requested = _raw_model_requested(action, raw_rho)
+    scheduler_final_allowed = bool(evaluation.scheduler_final_allowed)
+    execution_gate_allowed = True if not scheduler_blocks else scheduler_final_allowed
+    if first_trade:
+        final_action_bool = True
+        final_rho = raw_rho if raw_rho > 0.0 else 1.0
+        _mark_scheduler_rebalanced(scheduler, pd.Timestamp(decision_date))
+    else:
+        final_action_bool = bool(raw_model_requested and execution_gate_allowed)
+        final_rho = raw_rho if final_action_bool else 0.0
+        scheduler.commit_scheduler_decision(
+            decision_date,
+            scheduler_pre_allowed=evaluation.scheduler_pre_allowed,
+            scheduler_post_allowed=evaluation.scheduler_post_allowed,
+            scheduler_final_allowed=evaluation.scheduler_final_allowed,
+            raw_model_requested_rebalance=raw_model_requested,
+            final_action=final_action_bool,
+            execution_accepted=final_action_bool,
+        )
+    scheduler_pre_blocked = bool(raw_model_requested and not evaluation.scheduler_pre_allowed)
+    scheduler_post_blocked = bool(
+        raw_model_requested
+        and evaluation.scheduler_pre_allowed
+        and not evaluation.scheduler_post_allowed
+    )
+    scheduler_final_blocked = bool(raw_model_requested and not scheduler_final_allowed)
+    execution_scheduler_blocked = bool(
+        raw_model_requested
+        and not final_action_bool
+        and scheduler_blocks
+        and not scheduler_final_allowed
+    )
+    model_chosen_hold = bool(
+        not first_trade
+        and execution_gate_allowed
+        and raw_rho == 0.0
+        and not raw_model_requested
+    )
+    action_info.update(
+        {
+            "execution_activity_protocol": protocol,
+            "activity_protocol": protocol,
+            "scheduler_blocks_model_actions": scheduler_blocks,
+            "activity_gate_enforced": bool(execution_activity_config.get("activity_gate_enforced", False)),
+            "turnover_optimization_protocol_id": execution_activity_config.get("turnover_optimization_protocol_id"),
+            "scheduler_pre_allowed": bool(evaluation.scheduler_pre_allowed),
+            "scheduler_post_allowed": bool(evaluation.scheduler_post_allowed),
+            "scheduler_final_allowed": scheduler_final_allowed,
+            "scheduler_allowed_rebalance": scheduler_final_allowed,
+            "first_trade": bool(first_trade),
+            "execution_gate_allowed": bool(execution_gate_allowed),
+            "raw_rho": float(raw_rho),
+            "raw_rebalance_intensity": float(raw_rho),
+            "raw_model_requested_rebalance": bool(raw_model_requested),
+            "raw_action": int(raw_model_requested),
+            "final_action": int(final_action_bool),
+            "final_rho": float(final_rho),
+            "final_rebalance_intensity": float(final_rho),
+            "scheduler_pre_blocked": scheduler_pre_blocked,
+            "scheduler_post_blocked": scheduler_post_blocked,
+            "scheduler_final_blocked": scheduler_final_blocked,
+            "scheduler_blocked_rebalance": scheduler_final_blocked,
+            "execution_scheduler_blocked": execution_scheduler_blocked,
+            "model_chosen_hold": model_chosen_hold,
+            "trade_opportunity": bool(first_trade or execution_gate_allowed),
+            "non_initial_trade_opportunity": bool((not first_trade) and execution_gate_allowed),
+        }
+    )
+    if execution_scheduler_blocked:
+        action_info["forced_hold_reason"] = "scheduler_blocked"
+    elif model_chosen_hold and not action_info.get("forced_hold_reason"):
+        action_info["forced_hold_reason"] = "model_chosen_hold"
+    return PortfolioAction(
+        target_weights=action.target_weights.copy(),
+        rebalance_action=int(final_action_bool),
+        rebalance_intensity=float(final_rho),
+        action_info=action_info,
+    )
+
+
+def _raw_rebalance_intensity(action: PortfolioAction) -> float:
+    info = dict(action.action_info)
+    for key in ("raw_rho", "raw_rebalance_intensity", "rho", "rebalance_intensity"):
+        if key in info and info[key] is not None:
+            return _bounded_optional_float(info[key], key)
+    if action.rebalance_action == 1:
+        return float(action.rebalance_intensity)
+    return 0.0
+
+
+def _raw_model_requested(action: PortfolioAction, raw_rho: float) -> bool:
+    info = dict(action.action_info)
+    if "raw_model_requested_rebalance" in info:
+        return bool(info["raw_model_requested_rebalance"])
+    if "raw_action" in info:
+        return bool(int(info["raw_action"]))
+    return bool(raw_rho > 0.0 and action.rebalance_action == 1)
+
+
+def _bounded_optional_float(value: Any, name: str) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise DataContractError("ERR_ACTION_SHAPE_MISMATCH", f"ERR_ACTION_SHAPE_MISMATCH: {name}") from exc
+    if not np.isfinite(result) or result < 0.0 or result > 1.0:
+        raise DataContractError("ERR_ACTION_SHAPE_MISMATCH", f"ERR_ACTION_SHAPE_MISMATCH: {name}")
+    return result
+
+
+def _execution_activity_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    defaults = DEFAULT_CONFIG["execution_activity"]
+    raw = config.get("execution_activity", {})
+    activity = {**defaults, **(dict(raw) if isinstance(raw, Mapping) else {})}
+    protocol = str(activity.get("protocol", "monthly_gate"))
+    if protocol not in {"monthly_gate", "weekly_gate", "daily_gate_with_cost_constraint"}:
+        raise DataContractError(
+            "ERR_CONFIG_INVALID_EXECUTION_ACTIVITY",
+            "ERR_CONFIG_INVALID_EXECUTION_ACTIVITY: execution_activity.protocol",
+        )
+    scheduler_blocks = bool(activity.get("scheduler_blocks_model_actions", True))
+    if protocol in {"monthly_gate", "weekly_gate"} and scheduler_blocks is not True:
+        raise DataContractError(
+            "ERR_CONFIG_INVALID_EXECUTION_ACTIVITY",
+            "ERR_CONFIG_INVALID_EXECUTION_ACTIVITY: scheduler_blocks_model_actions",
+        )
+    if protocol == "daily_gate_with_cost_constraint" and scheduler_blocks is not False:
+        raise DataContractError(
+            "ERR_CONFIG_INVALID_EXECUTION_ACTIVITY",
+            "ERR_CONFIG_INVALID_EXECUTION_ACTIVITY: daily_gate_with_cost_constraint requires scheduler_blocks_model_actions=false",
+        )
+    return activity
+
+
 def _daily_returns_record(context: Mapping[str, Any]) -> dict[str, Any]:
     result = context["execution_result"]
     state = context["execution_state"]
@@ -942,7 +1117,7 @@ def _baseline_diagnostics_record(context: Mapping[str, Any]) -> dict[str, Any]:
         "decision_date": state.decision_date,
         "execution_date": state.execution_date,
         "model_name": metadata["model_name"],
-        "paper_model_id": action_info.get("paper_model_id"),
+        "paper_model_id": action_info.get("paper_model_id") or metadata["model_name"],
         "seed": metadata["seed"],
         "fold_id": metadata["fold_id"],
         "rebalance_action": int(context.get("final_action", action.rebalance_action)),
@@ -951,6 +1126,7 @@ def _baseline_diagnostics_record(context: Mapping[str, Any]) -> dict[str, Any]:
         "candidate_weights_json": action_info.get("candidate_weights_json", _weights_json(action.target_weights)),
         "executed_weights_json": _weights_json(result.executed_weights),
         "pre_execution_drifted_weights_json": _weights_json(result.pre_execution_drifted_weights),
+        "active_weight_change_l1": float(np.sum(np.abs(result.executed_weights - result.pre_execution_drifted_weights))),
         "estimated_turnover": result.estimated_turnover,
         "realized_turnover": result.realized_turnover,
         "turnover": result.turnover,
@@ -972,6 +1148,15 @@ def _has_paper_model_id(value: Any) -> bool:
     if value is None:
         return False
     return bool(str(value).strip())
+
+
+def _should_record_daily_diagnostics(action: PortfolioAction, execution_activity_config: Mapping[str, Any]) -> bool:
+    if _has_paper_model_id(action.action_info.get("paper_model_id")):
+        return True
+    return (
+        str(execution_activity_config.get("protocol", "")) == "daily_gate_with_cost_constraint"
+        or bool(execution_activity_config.get("activity_gate_enforced", False))
+    )
 
 
 def _daily_costs_record(context: Mapping[str, Any]) -> dict[str, Any]:
@@ -1051,19 +1236,89 @@ def _metrics(
     daily_returns: Sequence[Mapping[str, Any]],
     daily_turnover: Sequence[Mapping[str, Any]],
     daily_costs: Sequence[Mapping[str, Any]],
-) -> dict[str, float]:
+    daily_diagnostics: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
     if not daily_returns:
         return {"n_steps": 0.0, "final_nav": np.nan, "cumulative_return": np.nan}
     final_nav = float(daily_returns[-1]["nav"])
     total_cost = float(sum(float(row["total_transaction_cost"]) for row in daily_costs))
     avg_turnover = float(np.mean([float(row["turnover"]) for row in daily_turnover]))
-    return {
+    metrics = {
         "n_steps": float(len(daily_returns)),
         "final_nav": final_nav,
         "cumulative_return": final_nav - 1.0,
         "total_transaction_cost": total_cost,
         "average_turnover": avg_turnover,
     }
+    metrics.update(_activity_metrics(daily_diagnostics or []))
+    return metrics
+
+
+def _activity_metrics(daily_diagnostics: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    if not daily_diagnostics:
+        return {}
+    frame = pd.DataFrame(daily_diagnostics)
+    if frame.empty:
+        return {}
+    raw_requested = _numeric_series(frame, "raw_model_requested_rebalance").fillna(0.0) > 0.0
+    final_action = _numeric_series(frame, "final_action").fillna(_numeric_series(frame, "rebalance_action").fillna(0.0)) > 0.0
+    trade_opportunity = _numeric_series(frame, "trade_opportunity").fillna(0.0) > 0.0
+    non_initial_opportunity = _numeric_series(frame, "non_initial_trade_opportunity").fillna(0.0) > 0.0
+    first_trade = _numeric_series(frame, "first_trade").fillna(0.0) > 0.0
+    non_initial_final = final_action & ~first_trade
+    turnover = _numeric_series(frame, "turnover").fillna(0.0)
+    non_initial_turnover_sum = float(turnover[~first_trade].sum())
+    non_initial_trade_opportunity_count = int(non_initial_opportunity.sum())
+    model_rebalance_hit_rate = float(non_initial_final.sum()) / float(max(1, non_initial_trade_opportunity_count))
+    metrics: dict[str, Any] = {
+        "trade_opportunity_count": float(trade_opportunity.sum()),
+        "non_initial_trade_opportunity_count": float(non_initial_trade_opportunity_count),
+        "model_rebalance_hit_rate": model_rebalance_hit_rate,
+        "raw_model_requested_rebalance_count": float(raw_requested.sum()),
+        "non_initial_rebalance_count": float(non_initial_final.sum()),
+        "non_initial_turnover_sum": non_initial_turnover_sum,
+        "non_initial_turnover_per_opportunity": non_initial_turnover_sum / float(max(1, non_initial_trade_opportunity_count)),
+        "raw_rho_mean": float(_numeric_series(frame, "raw_rho").mean()),
+        "final_rho_mean": float(_numeric_series(frame, "final_rho").mean()),
+        "active_weight_change_l1_mean": float(_numeric_series(frame, "active_weight_change_l1").mean()),
+        "scheduler_pre_blocked_count": float((_numeric_series(frame, "scheduler_pre_blocked").fillna(0.0) > 0.0).sum()),
+        "scheduler_post_blocked_count": float((_numeric_series(frame, "scheduler_post_blocked").fillna(0.0) > 0.0).sum()),
+        "scheduler_final_blocked_count": float((_numeric_series(frame, "scheduler_final_blocked").fillna(0.0) > 0.0).sum()),
+        "scheduler_blocked_rebalance_count": float((_numeric_series(frame, "scheduler_blocked_rebalance").fillna(0.0) > 0.0).sum()),
+        "model_chosen_hold_count": float((_numeric_series(frame, "model_chosen_hold").fillna(0.0) > 0.0).sum()),
+        "execution_scheduler_blocked_count": float((_numeric_series(frame, "execution_scheduler_blocked").fillna(0.0) > 0.0).sum()),
+    }
+    protocol = _first_text_value(frame, "activity_protocol", "execution_activity_protocol")
+    if protocol:
+        metrics["activity_protocol"] = protocol
+        metrics["execution_activity_protocol"] = protocol
+    turnover_protocol = _first_text_value(frame, "turnover_optimization_protocol_id")
+    if turnover_protocol:
+        metrics["turnover_optimization_protocol_id"] = turnover_protocol
+    scheduler_blocks = _first_text_value(frame, "scheduler_blocks_model_actions")
+    if scheduler_blocks:
+        metrics["scheduler_blocks_model_actions"] = scheduler_blocks
+    activity_gate = _first_text_value(frame, "activity_gate_enforced")
+    if activity_gate:
+        metrics["activity_gate_enforced"] = activity_gate
+    return metrics
+
+
+def _first_text_value(frame: pd.DataFrame, *columns: str) -> str | None:
+    for column in columns:
+        if column not in frame.columns:
+            continue
+        for value in frame[column].dropna().tolist():
+            text = str(value).strip()
+            if text:
+                return text
+    return None
+
+
+def _numeric_series(frame: pd.DataFrame, column: str) -> pd.Series:
+    if column not in frame.columns:
+        return pd.Series([np.nan] * len(frame), index=frame.index, dtype=float)
+    return pd.to_numeric(frame[column], errors="coerce")
 
 
 def _zero_cost_model(config: Mapping[str, Any]) -> Any:
