@@ -37,6 +37,10 @@
         {
           "kind": "file",
           "ref": "docs/pitfalls.json"
+        },
+        {
+          "kind": "file",
+          "ref": "docs/ai_routing_evolution_policy.json"
         }
       ],
       "then_check_files": [
@@ -45,7 +49,12 @@
           "ref": "AGENTS.md"
         }
       ],
-      "related_tests": [],
+      "related_tests": [
+        {
+          "kind": "file",
+          "ref": "tests/test_scope_guard.py"
+        }
+      ],
       "related_configs": [],
       "pitfall_ids": [],
       "expand_search_when": [
@@ -72,6 +81,14 @@
         {
           "kind": "command",
           "ref": "python3 -m json.tool docs/pitfalls.json"
+        },
+        {
+          "kind": "command",
+          "ref": "python3 -m json.tool docs/ai_routing_evolution_policy.json"
+        },
+        {
+          "kind": "command",
+          "ref": "pytest tests/test_scope_guard.py"
         }
       ],
       "scope_notes": [

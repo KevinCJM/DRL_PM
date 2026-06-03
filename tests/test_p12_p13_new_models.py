@@ -86,6 +86,20 @@ def test_gt_rcpo_lite_keeps_raw_intent_on_scheduler_blocked_day():
     np.testing.assert_allclose(action.target_weights.sum(), 1.0)
 
 
+def test_gt_rcpo_lite_uses_normalized_alpha_gate_after_initial_build():
+    config = _strategy_config()
+    strategy = GTRCPOLiteStrategy(config)
+    strategy.set_decision_context(scheduler_allowed_rebalance=True, scheduler_pre_allowed=True, first_trade=False)
+
+    action = strategy.compute_target_weights(_decision_state(), _portfolio_state())
+
+    assert action.rebalance_action == 1
+    assert action.rebalance_intensity > 0.0
+    assert action.action_info["gate_scoring_mode"] == "normalized"
+    assert action.action_info["expected_alpha_horizon"] > 0.0
+    assert action.action_info["gate_score_components"] != "{}"
+
+
 def test_p12_p13_configs_load_and_models_are_registered():
     paths = [
         "p12_cage_eiie_smoke.yaml",

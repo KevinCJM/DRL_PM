@@ -1,0 +1,90 @@
+{
+  "schema_version": "1.0",
+  "role": "governance_only",
+  "authoritative_owners": {
+    "task_matching_module_expansion_and_operational_list_merge": "docs/task_routes.json",
+    "module_facts_and_operational_lists": "docs/repo_map.json",
+    "pitfall_facts": "docs/pitfalls.json",
+    "agent_protocol": "AGENTS.md"
+  },
+  "invariants": [
+    "task_routes_remains_single_machine_owner",
+    "policy_must_not_duplicate_module_operational_lists",
+    "policy_must_not_duplicate_route_match_rules",
+    "policy_must_not_duplicate_pitfall_facts",
+    "agents_md_stays_protocol_only",
+    "business_code_is_not_modified_by_routing_only_tasks",
+    "stable_routing_references_are_git_tracked_or_explicit_artifacts"
+  ],
+  "commit_scope_guard": {
+    "routing_only_allowed_globs": [
+      "AGENTS.md",
+      "docs/ai_routing_evolution_policy.json",
+      "docs/repo_map.json",
+      "docs/task_routes.json",
+      "docs/pitfalls.json",
+      "service/AGENTS.md",
+      "service/docs/repo_map.json",
+      "service/docs/task_routes.json",
+      "service/docs/pitfalls.json",
+      "skills/ai-hermes-self-evolve/**",
+      "skills/ai-hermes-routing-init/**",
+      "docs/ai_user_project_memory_policy.json",
+      "skills/ai-hermes-user-project-memory/**"
+    ]
+  },
+  "change_detection": {
+    "ignored_globs": [
+      ".DS_Store",
+      "._*",
+      "**/._*",
+      ".pytest_cache/**",
+      "__pycache__/**",
+      "**/__pycache__/**",
+      "*.pyc",
+      "*_流水记录.jsonl",
+      "*_原始需求.md",
+      "*_需求澄清.md",
+      "*_详细设计.md",
+      "*_任务单.json",
+      "*_任务单.md",
+      "*_评审记录*.json",
+      "*_评审记录*.md",
+      "*_任务单评审记录*.md",
+      "*_详设评审记录*.md",
+      "*_开发前期.json",
+      "*_开发前期.md",
+      "*_与人类交流.md",
+      "*_人机交互澄清记录.md",
+      "*_需求分析师反馈.md"
+    ]
+  },
+  "reproducibility": {
+    "tracked_reference_check": {
+      "enabled": true,
+      "allowed_untracked_globs": [
+        ".DS_Store",
+        "._*",
+        "**/._*",
+        ".pytest_cache/**",
+        "__pycache__/**",
+        "**/__pycache__/**",
+        "*.pyc"
+      ]
+    }
+  },
+  "cli_contracts": {
+    "evolve_ai_routing": {
+      "must_not_modify_files": true,
+      "stable_json_fields": [
+        "changed_files",
+        "ignored_files",
+        "covered_files",
+        "uncovered_files",
+        "routing_only_violations",
+        "suggested_updates",
+        "exit_code_reason"
+      ]
+    }
+  }
+}

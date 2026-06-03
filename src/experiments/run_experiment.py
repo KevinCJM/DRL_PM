@@ -923,6 +923,11 @@ def _activity_trial_failure_reason(result: Mapping[str, Any], config: Mapping[st
     return None
 
 
+def _activity_hpo_trial_hard_fail_enabled(config: Mapping[str, Any]) -> bool:
+    constraints = _mapping(_mapping(config.get("hpo")).get("activity_constraints"))
+    return constraints.get("hard_fail_trials") is True
+
+
 def _safe_float(value: Any, default: float) -> float:
     try:
         result = float(value)
@@ -1093,7 +1098,7 @@ def _run_hpo_single(experiment: HPOExperiment) -> Mapping[str, Any]:
             row.update(_activity_audit_values(trial_result))
             activity_failure = _activity_trial_failure_reason(trial_result, config)
             row["activity_failure_reason"] = activity_failure or ""
-            if activity_failure:
+            if activity_failure and _activity_hpo_trial_hard_fail_enabled(config):
                 row["fail_reason"] = activity_failure
                 raise _HPOTrialFailure(activity_failure)
             row["state"] = "complete"

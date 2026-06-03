@@ -22,6 +22,8 @@ from src.config import ConfigLoader
 from src.experiments.registry import ExperimentRegistry, HPOExperiment
 from src.experiments.run_experiment import (
     _HPOTrialFailure,
+    _activity_audit_values,
+    _activity_hpo_trial_hard_fail_enabled,
     _activity_trial_failure_reason,
     _apply_orchestration_metadata,
     _assert_completed_result,
@@ -325,8 +327,11 @@ def _resume_or_run_interrupted_model_payload(root_experiment: HPOExperiment, mod
             trial_result = _result_mapping(_run_hpo_trial(model_experiment, trial, "train", validation_split))
             validation_metric = float(trial_result.get(metric, trial_result.get("validation_metric")))
             objective_value = float(trial_result.get("objective_value", validation_metric))
+            row.update(_activity_audit_values(trial_result))
             activity_failure = _activity_trial_failure_reason(trial_result, model_config)
-            if activity_failure:
+            row["activity_failure_reason"] = activity_failure or ""
+            if activity_failure and _activity_hpo_trial_hard_fail_enabled(model_config):
+                row["fail_reason"] = activity_failure
                 raise _HPOTrialFailure(activity_failure)
             row["state"] = "complete"
             row["objective_value"] = objective_value

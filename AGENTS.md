@@ -39,6 +39,14 @@ Machine-first routing protocol for this subtree only.
 - Validate output schemas/counters when data, metrics, or report files change.
 - Confirm generated files remain under current subtree paths only.
 
+# AI Routing Self-Evolution
+- Use AI Hermes self-evolution as governance only; do not treat routing memory as implementation truth.
+- Use `skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py` for routing coverage checks and `skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py` for validation when project-local scripts exist; otherwise use the bundled skill scripts with `--project-root`.
+- Record only verified hidden contracts, reproducible route coverage, validation rules, and routing ownership facts in routing memory.
+- Update `AGENTS.md` only when protocol, scope, submit workflow, or validator-required governance changes.
+- For routing-only updates, run `skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py --routing-only` on changed routing files before validation.
+- Validate routing with `skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py` before commit when routing memory changes.
+
 # Output Discipline
 - No architecture prose.
 - No duplicated module/task/pitfall catalogs outside JSON files.

@@ -187,6 +187,7 @@ def _relative_files(root: Path, suffix: str | None = None, recursive: bool = Tru
         path.relative_to(PROJECT_ROOT).as_posix()
         for path in iterator
         if path.is_file()
+        and not path.name.startswith("._")
         and "__pycache__" not in path.parts
         and not path.name.endswith((".pyc", ".pyo"))
         and (suffix is None or path.suffix == suffix)

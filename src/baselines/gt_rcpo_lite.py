@@ -12,6 +12,7 @@ from src.baselines.cage_common import (
     DEFAULT_GT_RCPOLITE_RHOS,
     MODEL_EXTENSION_ID,
     choose_rho,
+    compute_expected_alpha_horizon,
     decision_return_features,
     estimate_cost,
     estimate_turnover,
@@ -20,6 +21,7 @@ from src.baselines.cage_common import (
     new_model_training_result,
     normalize_candidate,
     rho_grid,
+    score_rho_normalized,
     weights_json,
 )
 from src.envs.state import DecisionMarketState, PortfolioAction, PortfolioState
@@ -91,10 +93,20 @@ class GTRCPOLiteStrategy(BaseStrategy):
         context = mapping(getattr(self, "decision_context", {}))
         scheduler_allowed = bool(context.get("scheduler_allowed_rebalance", True))
         first_trade = bool(context.get("first_trade", False))
-        rho, scores, forced_hold_reason = self._rho_action(
+        mu_1d = _decision_visible_mu_1d(state.log_return_window, candidate.shape[0])
+        gate_scoring = _gate_scoring_config(self.config, "gt_rcpo_lite")
+        expected_alpha_horizon = compute_expected_alpha_horizon(
+            activity_protocol=_activity_protocol(self.config),
+            candidate_weights=candidate,
+            current_weights=current,
+            mu_1d_decision_visible=mu_1d,
+            horizon_config=gate_scoring,
+        )
+        rho, scores, score_components, forced_hold_reason = self._rho_action(
             scheduler_allowed=scheduler_allowed,
             first_trade=first_trade,
             expected_return=_candidate_expected_return(candidate, state.log_return_window),
+            expected_alpha_horizon=expected_alpha_horizon,
             estimated_turnover=turnover,
             estimated_cost=cost,
             cvar_loss_5=risk["cvar_loss_5"],
@@ -120,6 +132,13 @@ class GTRCPOLiteStrategy(BaseStrategy):
             "raw_gate_action_index": int(action_index),
             "rebalance_intensity": float(rho),
             "rebalance_values": json.dumps(scores, sort_keys=True, separators=(",", ":")),
+            "gate_score_components": json.dumps(score_components, sort_keys=True, separators=(",", ":")),
+            "gate_scoring_mode": str(gate_scoring.get("mode", "normalized")),
+            "expected_alpha_horizon": float(expected_alpha_horizon),
+            "alpha_scale": gate_scoring.get("alpha_scale"),
+            "turnover_scale": gate_scoring.get("turnover_scale"),
+            "cost_scale": gate_scoring.get("cost_scale"),
+            "hold_opportunity_penalty": gate_scoring.get("hold_opportunity_penalty"),
             "q_hold": float(scores.get("0", scores.get("0.0", 0.0))),
             "q_rebalance": float(max((value for key, value in scores.items() if float(key) > 0.0), default=0.0)),
             "q_gap": float(
@@ -174,15 +193,28 @@ class GTRCPOLiteStrategy(BaseStrategy):
         scheduler_allowed: bool,
         first_trade: bool,
         expected_return: float,
+        expected_alpha_horizon: float,
         estimated_turnover: float,
         estimated_cost: float,
         cvar_loss_5: float,
         drawdown: float,
-    ) -> tuple[float, dict[str, float], str | None]:
+    ) -> tuple[float, dict[str, float], dict[str, dict[str, float]], str | None]:
         _ = scheduler_allowed
         if first_trade and bool(mapping(self.config.get("gt_rcpo_lite")).get("initial_build_full_rho", True)):
-            return 1.0, {str(value).rstrip("0").rstrip("."): float(value) for value in self.rho_values}, None
+            return 1.0, {str(value).rstrip("0").rstrip("."): float(value) for value in self.rho_values}, {}, None
         section = mapping(self.config.get("gt_rcpo_lite"))
+        gate_scoring = _gate_scoring_config(self.config, "gt_rcpo_lite")
+        if str(gate_scoring.get("mode", "normalized")) == "normalized":
+            rho, scores, components = score_rho_normalized(
+                rho_values=self.rho_values,
+                expected_alpha=float(expected_alpha_horizon),
+                estimated_turnover=float(estimated_turnover),
+                estimated_cost=float(estimated_cost),
+                cvar_loss_5=float(cvar_loss_5),
+                drawdown=float(drawdown),
+                scale_config=gate_scoring,
+            )
+            return rho, scores, components, "model_chosen_hold" if rho == 0.0 else None
         rho, scores = choose_rho(
             rho_values=self.rho_values,
             expected_return=float(expected_return),
@@ -197,7 +229,7 @@ class GTRCPOLiteStrategy(BaseStrategy):
             cvar_loss_budget=float(section.get("cvar_loss_budget", 0.02)),
             drawdown_budget=float(section.get("drawdown_budget", 0.10)),
         )
-        return rho, scores, "model_chosen_hold" if rho == 0.0 else None
+        return rho, scores, {}, "model_chosen_hold" if rho == 0.0 else None
 
 
 def _rolling_correlation_penalty(window: np.ndarray) -> np.ndarray:
@@ -217,6 +249,31 @@ def _candidate_expected_return(candidate_weights: np.ndarray, log_return_window:
         return 0.0
     recent = np.nan_to_num(window[-min(20, window.shape[0]) :], nan=0.0, posinf=0.0, neginf=0.0)
     return float(np.dot(candidate_weights, np.mean(recent, axis=0)))
+
+
+def _decision_visible_mu_1d(log_return_window: Any, n_assets: int) -> np.ndarray:
+    window = np.asarray(log_return_window, dtype=float)
+    if window.ndim == 3:
+        window = window.reshape(window.shape[-2], window.shape[-1])
+    if window.ndim != 2 or window.shape[-1] != int(n_assets) or window.size == 0:
+        return np.zeros(int(n_assets), dtype=float)
+    recent = np.nan_to_num(window[-min(20, window.shape[0]) :], nan=0.0, posinf=0.0, neginf=0.0)
+    return np.mean(recent, axis=0)
+
+
+def _activity_protocol(config: Mapping[str, Any]) -> str:
+    activity = mapping(config.get("execution_activity"))
+    return str(activity.get("protocol", "monthly_gate"))
+
+
+def _gate_scoring_config(config: Mapping[str, Any], section_name: str) -> dict[str, Any]:
+    section = mapping(config.get(section_name))
+    gate = dict(mapping(section.get("gate_scoring")))
+    if "cvar_budget" not in gate and "cvar_loss_budget" in section:
+        gate["cvar_budget"] = section["cvar_loss_budget"]
+    if "drawdown_budget" not in gate and "drawdown_budget" in section:
+        gate["drawdown_budget"] = section["drawdown_budget"]
+    return gate
 
 
 __all__ = ["GTRCPOLiteStrategy"]

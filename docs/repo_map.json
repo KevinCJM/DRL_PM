@@ -262,8 +262,18 @@
         }
       ],
       "read_before_edit": [
-        "re-open target yaml and direct consumer files",
-        "confirm config key path in code before rename"
+        {
+          "kind": "file",
+          "ref": "src/config.py"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/experiments/main.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/baselines.yaml"
+        }
       ],
       "routing_confidence": "medium",
       "expand_search_when": [
@@ -316,6 +326,10 @@
         {
           "kind": "file",
           "ref": "docs/pitfalls.json"
+        },
+        {
+          "kind": "file",
+          "ref": "docs/ai_routing_evolution_policy.json"
         }
       ],
       "key_symbols": [
@@ -334,6 +348,10 @@
         {
           "kind": "file",
           "ref": "docs/pitfalls.json"
+        },
+        {
+          "kind": "file",
+          "ref": "docs/ai_routing_evolution_policy.json"
         }
       ],
       "then_check_files": [
@@ -345,7 +363,12 @@
       "upstream_dependencies": [],
       "downstream_dependencies": [],
       "out_of_scope_dependencies": [],
-      "related_tests": [],
+      "related_tests": [
+        {
+          "kind": "file",
+          "ref": "tests/test_scope_guard.py"
+        }
+      ],
       "related_configs": [],
       "risk_flags": [
         "routing_coverage_drift",
@@ -370,6 +393,14 @@
         {
           "kind": "command",
           "ref": "python3 -m json.tool docs/pitfalls.json"
+        },
+        {
+          "kind": "command",
+          "ref": "python3 -m json.tool docs/ai_routing_evolution_policy.json"
+        },
+        {
+          "kind": "command",
+          "ref": "pytest tests/test_scope_guard.py"
         }
       ],
       "read_before_edit": [
@@ -384,6 +415,10 @@
         {
           "kind": "file",
           "ref": "docs/pitfalls.json"
+        },
+        {
+          "kind": "file",
+          "ref": "docs/ai_routing_evolution_policy.json"
         }
       ],
       "routing_confidence": "grounded",
@@ -401,6 +436,8 @@
           "docs/repo_map.json",
           "docs/task_routes.json",
           "docs/pitfalls.json",
+          "docs/ai_routing_evolution_policy.json",
+          "tests/test_scope_guard.py",
           "AGENTS.md"
         ],
         "unsampled_paths": []
@@ -573,8 +610,18 @@
         }
       ],
       "read_before_edit": [
-        "re-open leakage checks and loader contracts",
-        "confirm date/index alignment and empty-split behavior"
+        {
+          "kind": "file",
+          "ref": "src/data/leakage_checks.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/data/loader.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/data/splits.py"
+        }
       ],
       "routing_confidence": "high",
       "expand_search_when": [
@@ -584,7 +631,18 @@
       "scope_notes": [
         "dataset inputs or services outside this subtree are out_of_scope"
       ],
-      "notes": []
+      "notes": [],
+      "grounding": {
+        "fact_status": "mixed",
+        "evidence": [
+          "src/data/feature_matrix.py",
+          "src/data/loader.py",
+          "src/data/leakage_checks.py",
+          "tests/test_data_loader.py",
+          "tests/test_feature_matrix.py"
+        ],
+        "unsampled_paths": []
+      }
     },
     {
       "id": "env_runtime_family",
@@ -762,8 +820,22 @@
         }
       ],
       "read_before_edit": [
-        "re-open state schema and action dict fields",
-        "confirm delayed_action_execution and scheduler branches"
+        {
+          "kind": "file",
+          "ref": "src/envs/state.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/backtest_engine.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/rebalance_scheduler.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/portfolio_execution_core.py"
+        }
       ],
       "routing_confidence": "high",
       "expand_search_when": [
@@ -923,8 +995,18 @@
         }
       ],
       "read_before_edit": [
-        "re-open gate mode branches and output-dimension forcing",
-        "confirm downstream agent expectations for gate_action and rebalance_intensity"
+        {
+          "kind": "file",
+          "ref": "src/models/partial_rebalance_gated_ppo.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/models/partial_rebalance_gate.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/models/dqn_gated_multitask_cnn_ppo.py"
+        }
       ],
       "routing_confidence": "high",
       "expand_search_when": [
@@ -1105,8 +1187,18 @@
         }
       ],
       "read_before_edit": [
-        "re-open selected agent file and direct model/env imports",
-        "confirm checkpoint and device assumptions in tests"
+        {
+          "kind": "file",
+          "ref": "src/agents/ppo_agent.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/agents/partial_rebalance_agent.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/agents/training_guard.py"
+        }
       ],
       "routing_confidence": "medium",
       "expand_search_when": [
@@ -1302,8 +1394,18 @@
         }
       ],
       "read_before_edit": [
-        "re-open BaseStrategy contracts and selected concrete baseline",
-        "confirm downstream schema expectations before changing action or output fields"
+        {
+          "kind": "file",
+          "ref": "src/baselines/base_strategy.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/gt_rcpo_lite.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_baseline_output_schema.py"
+        }
       ],
       "routing_confidence": "medium",
       "expand_search_when": [
@@ -1482,8 +1584,18 @@
         }
       ],
       "read_before_edit": [
-        "re-open selected entrypoint and its registry/trainer linkage",
-        "confirm config names and output schema assumptions before edit"
+        {
+          "kind": "file",
+          "ref": "src/experiments/run_experiment.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/registry.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/pipeline.py"
+        }
       ],
       "routing_confidence": "medium",
       "expand_search_when": [
@@ -1642,8 +1754,14 @@
         }
       ],
       "read_before_edit": [
-        "re-open path constants and overwrite targets",
-        "confirm all generated outputs remain under current subtree"
+        {
+          "kind": "file",
+          "ref": "scripts/rebuild_etf_lof_data.py"
+        },
+        {
+          "kind": "file",
+          "ref": "scripts/run_pyfinance_metrics_factory.py"
+        }
       ],
       "routing_confidence": "high",
       "expand_search_when": [
