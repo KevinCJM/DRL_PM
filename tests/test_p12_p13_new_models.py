@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from src.baselines.cage_eiie import CageEIIEFixedRho50Strategy, CageEIIEMultilevelGateStrategy, CageEIIENoCvarStrategy
+from src.baselines.cage_common import gate_scoring_config
 from src.baselines.gt_rcpo_lite import GTRCPOLiteStrategy
 from src.config import ConfigLoader, DEFAULT_CONFIG, PROJECT_ROOT
 from src.envs.state import DecisionMarketState, PortfolioState
@@ -185,6 +186,31 @@ def test_gt_rcpo_lite_normalized_gate_uses_hpo_top_level_lambda_turnover():
     assert high_rho == 0.0
 
 
+def test_normalized_gate_uses_hpo_top_level_shape_controls():
+    config = _strategy_config()
+    config["hpo"]["search_space"] = {
+        "gt_rcpo_lite.alpha_scale": {"type": "float", "low": 0.0003, "high": 0.003},
+        "gt_rcpo_lite.alpha_activation_threshold": {"type": "float", "low": 0.05, "high": 0.5},
+        "gt_rcpo_lite.hold_opportunity_penalty": {"type": "float", "low": -0.8, "high": 0.0},
+        "gt_rcpo_lite.cost_budget": {"type": "float", "low": 0.00005, "high": 0.002},
+    }
+    config["gt_rcpo_lite"].update(
+        {
+            "alpha_scale": 0.0007,
+            "alpha_activation_threshold": 0.11,
+            "hold_opportunity_penalty": -0.55,
+            "cost_budget": 0.0003,
+        }
+    )
+
+    gate = gate_scoring_config(config, "gt_rcpo_lite")
+
+    assert gate["alpha_scale"] == 0.0007
+    assert gate["alpha_activation_threshold"] == 0.11
+    assert gate["hold_opportunity_penalty"] == -0.55
+    assert gate["cost_budget_per_trade"] == 0.0003
+
+
 def test_p12_p13_configs_load_and_models_are_registered():
     paths = [
         "p12_cage_eiie_smoke.yaml",
@@ -222,6 +248,47 @@ def test_p12_p13_configs_load_and_models_are_registered():
     }
     assert expected.issubset(set(DEEP_BASELINE_CLASSES))
     assert expected.issubset(NATIVE_HPO_MODEL_NAMES)
+
+
+def test_normalized_gate_hpo_configs_cover_activity_controls():
+    required_cage = {
+        "cage_eiie.lambda_turnover",
+        "cage_eiie.lambda_cost",
+        "cage_eiie.lambda_cvar",
+        "cage_eiie.lambda_drawdown",
+        "cage_eiie.turnover_budget",
+        "cage_eiie.cost_budget",
+        "cage_eiie.cvar_loss_budget",
+        "cage_eiie.drawdown_budget",
+        "cage_eiie.alpha_scale",
+        "cage_eiie.alpha_activation_threshold",
+        "cage_eiie.hold_opportunity_penalty",
+    }
+    required_gt = {
+        "gt_rcpo_lite.lambda_turnover",
+        "gt_rcpo_lite.lambda_cost",
+        "gt_rcpo_lite.lambda_cvar",
+        "gt_rcpo_lite.lambda_drawdown",
+        "gt_rcpo_lite.turnover_budget",
+        "gt_rcpo_lite.cost_budget",
+        "gt_rcpo_lite.cvar_loss_budget",
+        "gt_rcpo_lite.drawdown_budget",
+        "gt_rcpo_lite.alpha_scale",
+        "gt_rcpo_lite.alpha_activation_threshold",
+        "gt_rcpo_lite.hold_opportunity_penalty",
+    }
+    configs = {
+        "p12_cage_eiie_pilot.yaml": required_cage,
+        "p12_cage_eiie_formal_seed_runner.yaml": required_cage,
+        "p12_cage_eiie_distributional_pilot.yaml": required_cage,
+        "p12_cage_eiie_joint_light_pilot.yaml": required_cage,
+        "p13_gt_rcpo_lite_pilot.yaml": required_gt,
+        "p13_gt_rcpo_lite_formal_seed_runner.yaml": required_gt,
+    }
+
+    for name, required in configs.items():
+        config = ConfigLoader.load(PROJECT_ROOT / "configs" / "paper" / name)
+        assert required.issubset(set(config["hpo"]["search_space"])), name
 
 
 def test_new_model_artifact_derivation_from_diagnostics():

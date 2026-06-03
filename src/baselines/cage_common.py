@@ -79,6 +79,13 @@ def gate_scoring_config(config: Mapping[str, Any], section_name: str) -> dict[st
     _inherit_hpo_param(gate, section, hpo_paths, section_name, "lambda_cost", "lambda_cost")
     _inherit_hpo_param(gate, section, hpo_paths, section_name, "lambda_cvar", "lambda_cvar")
     _inherit_hpo_param(gate, section, hpo_paths, section_name, "lambda_drawdown", "lambda_drawdown", "lambda_dd")
+    _inherit_hpo_param(gate, section, hpo_paths, section_name, "alpha_scale", "alpha_scale")
+    _inherit_hpo_param(gate, section, hpo_paths, section_name, "turnover_scale", "turnover_scale")
+    _inherit_hpo_param(gate, section, hpo_paths, section_name, "cost_scale", "cost_scale")
+    _inherit_hpo_param(gate, section, hpo_paths, section_name, "cvar_scale", "cvar_scale")
+    _inherit_hpo_param(gate, section, hpo_paths, section_name, "drawdown_scale", "drawdown_scale")
+    _inherit_hpo_param(gate, section, hpo_paths, section_name, "alpha_activation_threshold", "alpha_activation_threshold")
+    _inherit_hpo_param(gate, section, hpo_paths, section_name, "hold_opportunity_penalty", "hold_opportunity_penalty")
     _inherit_hpo_param(gate, section, hpo_paths, section_name, "cvar_budget", "cvar_loss_budget")
     _inherit_hpo_param(gate, section, hpo_paths, section_name, "drawdown_budget", "drawdown_budget")
     _inherit_hpo_param(

@@ -85,6 +85,11 @@ hpo:
       low: 1.0
       high: 30.0
       rationale: Cost Lagrangian multiplier.
+    ra_gt_rcpo.average_turnover_per_step_budget:
+      type: float
+      low: 0.005
+      high: 0.08
+      rationale: Normalized gate per-trade turnover budget.
     ra_gt_rcpo.average_cost_per_step_budget:
       type: float
       low: 5.0e-05
@@ -110,6 +115,22 @@ hpo:
       low: 0.05
       high: 0.15
       rationale: Validation drawdown budget.
+    ra_gt_rcpo.alpha_scale:
+      type: float
+      low: 0.0003
+      high: 0.003
+      log: true
+      rationale: Normalized gate alpha scaling.
+    ra_gt_rcpo.alpha_activation_threshold:
+      type: float
+      low: 0.05
+      high: 0.5
+      rationale: Alpha threshold for penalizing hold decisions.
+    ra_gt_rcpo.hold_opportunity_penalty:
+      type: float
+      low: -0.8
+      high: 0.0
+      rationale: Opportunity penalty applied to hold when alpha is active.
     ra_gt_rcpo.graph_edge_threshold:
       type: float
       low: 0.05

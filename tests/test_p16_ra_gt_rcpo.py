@@ -111,9 +111,13 @@ def test_p16_normalized_gate_uses_hpo_top_level_constraints():
         "ra_gt_rcpo.lambda_cost": {"type": "float", "low": 1.0, "high": 30.0},
         "ra_gt_rcpo.lambda_cvar": {"type": "float", "low": 0.0, "high": 2.0},
         "ra_gt_rcpo.lambda_drawdown": {"type": "float", "low": 0.0, "high": 2.0},
+        "ra_gt_rcpo.average_turnover_per_step_budget": {"type": "float", "low": 0.005, "high": 0.08},
         "ra_gt_rcpo.average_cost_per_step_budget": {"type": "float", "low": 0.00005, "high": 0.001},
         "ra_gt_rcpo.cvar_loss_budget": {"type": "float", "low": 0.005, "high": 0.04},
         "ra_gt_rcpo.drawdown_budget": {"type": "float", "low": 0.05, "high": 0.15},
+        "ra_gt_rcpo.alpha_scale": {"type": "float", "low": 0.0003, "high": 0.003},
+        "ra_gt_rcpo.alpha_activation_threshold": {"type": "float", "low": 0.05, "high": 0.5},
+        "ra_gt_rcpo.hold_opportunity_penalty": {"type": "float", "low": -0.8, "high": 0.0},
     }
     config["ra_gt_rcpo"].update(
         {
@@ -121,9 +125,13 @@ def test_p16_normalized_gate_uses_hpo_top_level_constraints():
             "lambda_cost": 17.0,
             "lambda_cvar": 1.25,
             "lambda_drawdown": 1.5,
+            "average_turnover_per_step_budget": 0.02,
             "average_cost_per_step_budget": 0.00007,
             "cvar_loss_budget": 0.033,
             "drawdown_budget": 0.12,
+            "alpha_scale": 0.0008,
+            "alpha_activation_threshold": 0.14,
+            "hold_opportunity_penalty": -0.45,
         }
     )
 
@@ -133,9 +141,13 @@ def test_p16_normalized_gate_uses_hpo_top_level_constraints():
     assert gate["lambda_cost"] == 17.0
     assert gate["lambda_cvar"] == 1.25
     assert gate["lambda_drawdown"] == 1.5
+    assert gate["turnover_budget_per_trade"] == 0.02
     assert gate["cost_budget_per_trade"] == 0.00007
     assert gate["cvar_budget"] == 0.033
     assert gate["drawdown_budget"] == 0.12
+    assert gate["alpha_scale"] == 0.0008
+    assert gate["alpha_activation_threshold"] == 0.14
+    assert gate["hold_opportunity_penalty"] == -0.45
 
 
 def test_p16_configs_load_and_models_are_registered():
@@ -166,6 +178,22 @@ def test_p16_configs_load_and_models_are_registered():
     assert expected.issubset(NATIVE_HPO_MODEL_NAMES)
     cfg = ConfigLoader.load(PROJECT_ROOT / "configs/paper/p16_ra_gt_rcpo_smoke.yaml")
     assert type(ExperimentRegistry().create_experiment(cfg)).__name__ == "BaselineComparisonExperiment"
+    required = {
+        "ra_gt_rcpo.lambda_turnover",
+        "ra_gt_rcpo.lambda_cost",
+        "ra_gt_rcpo.lambda_cvar",
+        "ra_gt_rcpo.lambda_drawdown",
+        "ra_gt_rcpo.average_turnover_per_step_budget",
+        "ra_gt_rcpo.average_cost_per_step_budget",
+        "ra_gt_rcpo.cvar_loss_budget",
+        "ra_gt_rcpo.drawdown_budget",
+        "ra_gt_rcpo.alpha_scale",
+        "ra_gt_rcpo.alpha_activation_threshold",
+        "ra_gt_rcpo.hold_opportunity_penalty",
+    }
+    for name in ("p16_ra_gt_rcpo_pilot.yaml", "p16_ra_gt_rcpo_formal_seed_runner.yaml", "p16_ra_gt_rcpo_ablation.yaml"):
+        config = ConfigLoader.load(PROJECT_ROOT / "configs" / "paper" / name)
+        assert required.issubset(set(config["hpo"]["search_space"])), name
 
 
 def test_p16_formal_budget_gate_only_applies_to_formal_runs():

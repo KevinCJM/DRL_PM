@@ -77,10 +77,43 @@ hpo:
       type: float
       low: 5.0
       high: 20.0
+    cage_eiie.lambda_cvar:
+      type: float
+      low: 0.0
+      high: 1.0
+    cage_eiie.lambda_drawdown:
+      type: float
+      low: 0.0
+      high: 2.0
+    cage_eiie.turnover_budget:
+      type: float
+      low: 0.005
+      high: 0.08
+    cage_eiie.cost_budget:
+      type: float
+      low: 5.0e-05
+      high: 0.002
     cage_eiie.cvar_loss_budget:
       type: float
       low: 0.01
       high: 0.05
+    cage_eiie.drawdown_budget:
+      type: float
+      low: 0.05
+      high: 0.15
+    cage_eiie.alpha_scale:
+      type: float
+      low: 0.0003
+      high: 0.003
+      log: true
+    cage_eiie.alpha_activation_threshold:
+      type: float
+      low: 0.05
+      high: 0.5
+    cage_eiie.hold_opportunity_penalty:
+      type: float
+      low: -0.8
+      high: 0.0
   activity_constraints:
     enabled: true
     scope_baseline_families:

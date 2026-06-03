@@ -39,10 +39,47 @@ hpo:
       type: float
       low: 0.5
       high: 4.0
+    gt_rcpo_lite.lambda_cost:
+      type: float
+      low: 0.0
+      high: 2.0
     gt_rcpo_lite.lambda_cvar:
       type: float
       low: 0.0
       high: 1.0
+    gt_rcpo_lite.lambda_drawdown:
+      type: float
+      low: 0.0
+      high: 2.0
+    gt_rcpo_lite.turnover_budget:
+      type: float
+      low: 0.005
+      high: 0.08
+    gt_rcpo_lite.cost_budget:
+      type: float
+      low: 5.0e-05
+      high: 0.002
+    gt_rcpo_lite.cvar_loss_budget:
+      type: float
+      low: 0.005
+      high: 0.04
+    gt_rcpo_lite.drawdown_budget:
+      type: float
+      low: 0.05
+      high: 0.15
+    gt_rcpo_lite.alpha_scale:
+      type: float
+      low: 0.0003
+      high: 0.003
+      log: true
+    gt_rcpo_lite.alpha_activation_threshold:
+      type: float
+      low: 0.05
+      high: 0.5
+    gt_rcpo_lite.hold_opportunity_penalty:
+      type: float
+      low: -0.8
+      high: 0.0
   activity_constraints:
     enabled: true
     scope_baseline_families:

@@ -81,6 +81,14 @@ hpo:
       type: float
       low: 1.0
       high: 30.0
+    ra_gt_rcpo.average_turnover_per_step_budget:
+      type: float
+      low: 0.005
+      high: 0.08
+    ra_gt_rcpo.average_cost_per_step_budget:
+      type: float
+      low: 5.0e-05
+      high: 0.001
     ra_gt_rcpo.lambda_cvar:
       type: float
       low: 0.0
@@ -89,6 +97,27 @@ hpo:
       type: float
       low: 0.0
       high: 2.0
+    ra_gt_rcpo.cvar_loss_budget:
+      type: float
+      low: 0.005
+      high: 0.04
+    ra_gt_rcpo.drawdown_budget:
+      type: float
+      low: 0.05
+      high: 0.15
+    ra_gt_rcpo.alpha_scale:
+      type: float
+      low: 0.0003
+      high: 0.003
+      log: true
+    ra_gt_rcpo.alpha_activation_threshold:
+      type: float
+      low: 0.05
+      high: 0.5
+    ra_gt_rcpo.hold_opportunity_penalty:
+      type: float
+      low: -0.8
+      high: 0.0
   activity_constraints:
     enabled: true
     scope_baseline_families:
