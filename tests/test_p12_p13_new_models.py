@@ -3,7 +3,7 @@ from copy import deepcopy
 import numpy as np
 import pandas as pd
 
-from src.baselines.cage_eiie import CageEIIEFixedRho50Strategy, CageEIIENoCvarStrategy
+from src.baselines.cage_eiie import CageEIIEFixedRho50Strategy, CageEIIEMultilevelGateStrategy, CageEIIENoCvarStrategy
 from src.baselines.gt_rcpo_lite import GTRCPOLiteStrategy
 from src.config import ConfigLoader, DEFAULT_CONFIG, PROJECT_ROOT
 from src.envs.state import DecisionMarketState, PortfolioState
@@ -118,6 +118,71 @@ def test_gt_rcpo_lite_partial_rho_holds_when_executed_turnover_below_threshold()
     assert action.action_info["rho"] == 0.0
     assert action.action_info["threshold_turnover_estimate"] < action.action_info["rebalance_turnover_threshold"]
     assert action.action_info["forced_hold_reason"] == "below_rebalance_turnover_threshold"
+
+
+def test_cage_normalized_gate_uses_hpo_top_level_lambda_turnover():
+    low_config = _strategy_config()
+    low_config["hpo"]["search_space"] = {"cage_eiie.lambda_turnover": {"type": "float", "low": 0.5, "high": 4.0}}
+    low_config["cage_eiie"]["gate_scoring"]["mode"] = "normalized"
+    low_config["cage_eiie"]["lambda_turnover"] = 0.5
+    low_rho, *_ = CageEIIEMultilevelGateStrategy(low_config)._rho_action(
+        scheduler_allowed=True,
+        first_trade=False,
+        estimated_turnover=0.4,
+        estimated_cost=0.0,
+        expected_return=0.0,
+        expected_alpha_horizon=0.003,
+        cvar_loss_5=0.0,
+        drawdown=0.0,
+    )
+
+    high_config = deepcopy(low_config)
+    high_config["cage_eiie"]["lambda_turnover"] = 4.0
+    high_rho, *_ = CageEIIEMultilevelGateStrategy(high_config)._rho_action(
+        scheduler_allowed=True,
+        first_trade=False,
+        estimated_turnover=0.4,
+        estimated_cost=0.0,
+        expected_return=0.0,
+        expected_alpha_horizon=0.003,
+        cvar_loss_5=0.0,
+        drawdown=0.0,
+    )
+
+    assert low_rho > 0.0
+    assert high_rho == 0.0
+
+
+def test_gt_rcpo_lite_normalized_gate_uses_hpo_top_level_lambda_turnover():
+    low_config = _strategy_config()
+    low_config["hpo"]["search_space"] = {"gt_rcpo_lite.lambda_turnover": {"type": "float", "low": 0.5, "high": 4.0}}
+    low_config["gt_rcpo_lite"]["lambda_turnover"] = 0.5
+    low_rho, *_ = GTRCPOLiteStrategy(low_config)._rho_action(
+        scheduler_allowed=True,
+        first_trade=False,
+        expected_return=0.0,
+        expected_alpha_horizon=0.003,
+        estimated_turnover=0.4,
+        estimated_cost=0.0,
+        cvar_loss_5=0.0,
+        drawdown=0.0,
+    )
+
+    high_config = deepcopy(low_config)
+    high_config["gt_rcpo_lite"]["lambda_turnover"] = 4.0
+    high_rho, *_ = GTRCPOLiteStrategy(high_config)._rho_action(
+        scheduler_allowed=True,
+        first_trade=False,
+        expected_return=0.0,
+        expected_alpha_horizon=0.003,
+        estimated_turnover=0.4,
+        estimated_cost=0.0,
+        cvar_loss_5=0.0,
+        drawdown=0.0,
+    )
+
+    assert low_rho > 0.0
+    assert high_rho == 0.0
 
 
 def test_p12_p13_configs_load_and_models_are_registered():

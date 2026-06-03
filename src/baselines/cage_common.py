@@ -70,6 +70,43 @@ def rebalance_turnover_threshold(config: Mapping[str, Any], model_key: str) -> f
     return 0.0
 
 
+def gate_scoring_config(config: Mapping[str, Any], section_name: str) -> dict[str, Any]:
+    section = mapping(config.get(section_name))
+    gate = dict(mapping(section.get("gate_scoring")))
+    hpo_paths = _hpo_param_paths(config)
+
+    _inherit_hpo_param(gate, section, hpo_paths, section_name, "lambda_turnover", "lambda_turnover")
+    _inherit_hpo_param(gate, section, hpo_paths, section_name, "lambda_cost", "lambda_cost")
+    _inherit_hpo_param(gate, section, hpo_paths, section_name, "lambda_cvar", "lambda_cvar")
+    _inherit_hpo_param(gate, section, hpo_paths, section_name, "lambda_drawdown", "lambda_drawdown", "lambda_dd")
+    _inherit_hpo_param(gate, section, hpo_paths, section_name, "cvar_budget", "cvar_loss_budget")
+    _inherit_hpo_param(gate, section, hpo_paths, section_name, "drawdown_budget", "drawdown_budget")
+    _inherit_hpo_param(
+        gate,
+        section,
+        hpo_paths,
+        section_name,
+        "turnover_budget_per_trade",
+        "average_turnover_per_step_budget",
+        "turnover_budget",
+    )
+    _inherit_hpo_param(
+        gate,
+        section,
+        hpo_paths,
+        section_name,
+        "cost_budget_per_trade",
+        "average_cost_per_step_budget",
+        "cost_budget",
+    )
+
+    if "cvar_budget" not in gate and "cvar_loss_budget" in section:
+        gate["cvar_budget"] = section["cvar_loss_budget"]
+    if "drawdown_budget" not in gate and "drawdown_budget" in section:
+        gate["drawdown_budget"] = section["drawdown_budget"]
+    return gate
+
+
 def partial_rho_execution_decision(
     config: Mapping[str, Any],
     model_key: str,
@@ -327,6 +364,27 @@ def _native_cfg_int(config: Mapping[str, Any], key: str) -> int | None:
 
 def _rho_key(value: float) -> str:
     return f"{float(value):.2f}".rstrip("0").rstrip(".")
+
+
+def _hpo_param_paths(config: Mapping[str, Any]) -> set[str]:
+    hpo = mapping(config.get("hpo"))
+    search_space = mapping(hpo.get("search_space"))
+    best_params = mapping(hpo.get("best_params"))
+    return {str(key) for key in (*search_space.keys(), *best_params.keys())}
+
+
+def _inherit_hpo_param(
+    gate: dict[str, Any],
+    section: Mapping[str, Any],
+    hpo_paths: set[str],
+    section_name: str,
+    gate_key: str,
+    *section_keys: str,
+) -> None:
+    for section_key in section_keys:
+        if f"{section_name}.{section_key}" in hpo_paths and section.get(section_key) is not None:
+            gate[gate_key] = section[section_key]
+            return
 
 
 def _positive_scale(value: Any, name: str) -> float:

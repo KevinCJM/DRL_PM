@@ -6,7 +6,7 @@ import torch
 
 from src.agents.constrained_actor_critic_agent import ConstrainedActorCriticAgent, agent_config_from_mapping
 from src.baselines.deep_training import DeepBaselineTrainingBatch
-from src.baselines.risk_aware_gt_rcpo import RiskAwareGTRCPOStrategy, _formal_training_budget_status
+from src.baselines.risk_aware_gt_rcpo import RiskAwareGTRCPOStrategy, _formal_training_budget_status, _gate_scoring_config
 from src.config import ConfigLoader, DEFAULT_CONFIG, PROJECT_ROOT
 from src.envs.state import DecisionMarketState, PortfolioState
 from src.experiments.pipeline import _new_model_artifacts
@@ -102,6 +102,40 @@ def test_p16_partial_rho_holds_when_executed_turnover_below_threshold():
     assert action.action_info["rho"] == 0.0
     assert action.action_info["threshold_turnover_estimate"] < action.action_info["rebalance_turnover_threshold"]
     assert action.action_info["forced_hold_reason"] == "below_rebalance_turnover_threshold"
+
+
+def test_p16_normalized_gate_uses_hpo_top_level_constraints():
+    config = _strategy_config()
+    config["hpo"]["search_space"] = {
+        "ra_gt_rcpo.lambda_turnover": {"type": "float", "low": 0.1, "high": 5.0},
+        "ra_gt_rcpo.lambda_cost": {"type": "float", "low": 1.0, "high": 30.0},
+        "ra_gt_rcpo.lambda_cvar": {"type": "float", "low": 0.0, "high": 2.0},
+        "ra_gt_rcpo.lambda_drawdown": {"type": "float", "low": 0.0, "high": 2.0},
+        "ra_gt_rcpo.average_cost_per_step_budget": {"type": "float", "low": 0.00005, "high": 0.001},
+        "ra_gt_rcpo.cvar_loss_budget": {"type": "float", "low": 0.005, "high": 0.04},
+        "ra_gt_rcpo.drawdown_budget": {"type": "float", "low": 0.05, "high": 0.15},
+    }
+    config["ra_gt_rcpo"].update(
+        {
+            "lambda_turnover": 3.5,
+            "lambda_cost": 17.0,
+            "lambda_cvar": 1.25,
+            "lambda_drawdown": 1.5,
+            "average_cost_per_step_budget": 0.00007,
+            "cvar_loss_budget": 0.033,
+            "drawdown_budget": 0.12,
+        }
+    )
+
+    gate = _gate_scoring_config(config, "ra_gt_rcpo")
+
+    assert gate["lambda_turnover"] == 3.5
+    assert gate["lambda_cost"] == 17.0
+    assert gate["lambda_cvar"] == 1.25
+    assert gate["lambda_drawdown"] == 1.5
+    assert gate["cost_budget_per_trade"] == 0.00007
+    assert gate["cvar_budget"] == 0.033
+    assert gate["drawdown_budget"] == 0.12
 
 
 def test_p16_configs_load_and_models_are_registered():

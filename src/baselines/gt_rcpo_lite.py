@@ -17,6 +17,7 @@ from src.baselines.cage_common import (
     estimate_cost,
     estimate_turnover,
     gate_action_index,
+    gate_scoring_config,
     mapping,
     new_model_training_result,
     normalize_candidate,
@@ -282,13 +283,7 @@ def _activity_protocol(config: Mapping[str, Any]) -> str:
 
 
 def _gate_scoring_config(config: Mapping[str, Any], section_name: str) -> dict[str, Any]:
-    section = mapping(config.get(section_name))
-    gate = dict(mapping(section.get("gate_scoring")))
-    if "cvar_budget" not in gate and "cvar_loss_budget" in section:
-        gate["cvar_budget"] = section["cvar_loss_budget"]
-    if "drawdown_budget" not in gate and "drawdown_budget" in section:
-        gate["drawdown_budget"] = section["drawdown_budget"]
-    return gate
+    return gate_scoring_config(config, section_name)
 
 
 __all__ = ["GTRCPOLiteStrategy"]
