@@ -229,7 +229,8 @@ def test_bernoulli_proxy_gate_respects_turnover_threshold():
     )
 
     assert action.action_info["raw_gate_action"] == 1
-    assert action.action_info["raw_model_requested_rebalance"] is True
+    assert action.action_info["raw_gate_requested_rebalance"] is True
+    assert action.action_info["raw_model_requested_rebalance"] is False
     assert action.rebalance_action == 0
     assert action.rebalance_intensity == 0.0
     assert action.action_info["gate_action"] == 0
@@ -353,7 +354,8 @@ def test_dqn_only_rebalance_template_respects_turnover_threshold():
 
     assert action.action_info["template_chosen"] == "equal_weight"
     assert action.action_info["raw_gate_action"] == 1
-    assert action.action_info["raw_model_requested_rebalance"] is True
+    assert action.action_info["raw_gate_requested_rebalance"] is True
+    assert action.action_info["raw_model_requested_rebalance"] is False
     assert action.rebalance_action == 0
     assert action.rebalance_intensity == 0.0
     assert action.action_info["gate_action"] == 0
@@ -660,6 +662,13 @@ def test_eiie_native_rebalances_when_turnover_exceeds_threshold():
     assert action.rebalance_intensity == 1.0
     assert action.action_info["estimated_turnover"] > 0.01
 
+    strategy.set_decision_context(scheduler_allowed_rebalance=False, scheduler_pre_allowed=False, first_trade=False)
+    blocked = strategy.compute_target_weights(state, portfolio)
+    assert blocked.rebalance_action == 0
+    assert blocked.rebalance_intensity == 0.0
+    assert blocked.action_info["raw_model_requested_rebalance"] is True
+    assert blocked.action_info["forced_hold_reason"] == "scheduler_blocked"
+
 
 def test_native_ppo_holds_when_turnover_below_threshold():
     from src.baselines.native_ppo import NativePPOBaselineStrategy
@@ -751,9 +760,10 @@ def test_native_bernoulli_gate_respects_turnover_threshold():
     )
 
     assert action.action_info["raw_bernoulli_gate_action"] == 1
-    assert action.action_info["raw_model_requested_rebalance"] is True
-    assert action.action_info["raw_action"] == 1
-    assert action.action_info["raw_rho"] == pytest.approx(1.0)
+    assert action.action_info["raw_gate_requested_rebalance"] is True
+    assert action.action_info["raw_model_requested_rebalance"] is False
+    assert action.action_info["raw_action"] == 0
+    assert action.action_info["raw_rho"] == pytest.approx(0.0)
     assert action.rebalance_action == 0
     assert action.rebalance_intensity == 0.0
     assert action.action_info["gate_action"] == 0

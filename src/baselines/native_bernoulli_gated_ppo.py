@@ -205,6 +205,7 @@ class NativeBernoulliGatedPPOBaselineStrategy(BaseStrategy):
                     "gate_entropy": action_info["gate_entropy"],
                     "gate_action": action_info["gate_action"],
                     "raw_bernoulli_gate_action": action_info["raw_bernoulli_gate_action"],
+                    "raw_gate_requested_rebalance": action_info["raw_gate_requested_rebalance"],
                     "continuous_weight_rebalance_gate": action_info["continuous_weight_rebalance_gate"],
                     "rebalance_turnover_threshold": action_info["rebalance_turnover_threshold"],
                     "estimated_turnover": action_info["estimated_turnover"],
@@ -297,7 +298,8 @@ class NativeBernoulliGatedPPOBaselineStrategy(BaseStrategy):
         turnover_value = float(turnover.view(-1)[0].detach().cpu())
         threshold = _rebalance_turnover_threshold(self.config, self.strategy_name)
         first_trade = bool(float(current_weights.sum().detach().cpu()) <= 0.0)
-        requested = bool(first_trade or (raw_gate_action and turnover_value > threshold + 1.0e-12))
+        raw_requested = bool(raw_gate_action and turnover_value > threshold + 1.0e-12)
+        requested = bool(first_trade or raw_requested)
         executed_weights = candidate_weights if requested else current_weights
         forced_hold_reason = None
         if not requested:
@@ -322,10 +324,11 @@ class NativeBernoulliGatedPPOBaselineStrategy(BaseStrategy):
             "estimated_cost": 0.0,
             "continuous_weight_rebalance_gate": True,
             "rebalance_turnover_threshold": threshold,
-            "raw_model_requested_rebalance": bool(raw_gate_action),
-            "raw_action": raw_gate_action,
-            "raw_rho": float(raw_gate_action),
-            "raw_rebalance_intensity": float(raw_gate_action),
+            "raw_gate_requested_rebalance": bool(raw_gate_action),
+            "raw_model_requested_rebalance": raw_requested,
+            "raw_action": int(raw_requested),
+            "raw_rho": 1.0 if raw_requested else 0.0,
+            "raw_rebalance_intensity": 1.0 if raw_requested else 0.0,
             "first_trade": first_trade,
             "forced_hold_reason": forced_hold_reason,
         }

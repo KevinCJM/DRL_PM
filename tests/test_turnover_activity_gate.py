@@ -72,6 +72,50 @@ def test_daily_nonblocking_protocol_preserves_raw_execution_request():
     assert final.action_info["execution_scheduler_blocked"] is False
 
 
+def test_daily_nonblocking_protocol_does_not_resurrect_threshold_hold():
+    config = deepcopy(DEFAULT_CONFIG)
+    config["rebalance"]["mode"] = "daily"
+    config["execution_activity"].update(
+        {
+            "protocol": "daily_gate_with_cost_constraint",
+            "scheduler_blocks_model_actions": False,
+            "activity_gate_enforced": True,
+        }
+    )
+    scheduler = RebalanceScheduler(config, date_index=pd.date_range("2024-01-01", periods=5, freq="B"))
+    action = PortfolioAction(
+        target_weights=np.array([0.2, 0.8]),
+        rebalance_action=0,
+        rebalance_intensity=0.0,
+        action_info={
+            "paper_model_id": "model",
+            "raw_gate_requested_rebalance": True,
+            "raw_model_requested_rebalance": False,
+            "raw_action": 0,
+            "raw_rho": 0.0,
+            "forced_hold_reason": "below_rebalance_turnover_threshold",
+        },
+    )
+
+    final = _finalize_execution_action(
+        scheduler,
+        pd.Timestamp("2024-01-03"),
+        _portfolio_state(),
+        _decision_state(),
+        action,
+        False,
+        _execution_activity_config(config),
+    )
+
+    assert final.rebalance_action == 0
+    assert final.rebalance_intensity == 0.0
+    assert final.action_info["raw_gate_requested_rebalance"] is True
+    assert final.action_info["raw_model_requested_rebalance"] is False
+    assert final.action_info["final_action"] == 0
+    assert final.action_info["final_rho"] == 0.0
+    assert final.action_info["forced_hold_reason"] == "below_rebalance_turnover_threshold"
+
+
 def test_activity_metrics_include_protocol_labels():
     metrics = _activity_metrics(
         [

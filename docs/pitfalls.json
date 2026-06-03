@@ -420,6 +420,7 @@
       "confidence": "high",
       "symptoms": [
         "model appears to rebalance every day after threshold or scheduler logic should block trades",
+        "raw gate action is treated as raw_model_requested_rebalance before turnover threshold filtering",
         "scheduler-blocked days are logged as model_chosen_hold instead of preserving raw intent",
         "template index values leak into binary gate_action fields",
         "hold template returns an all-zero initial portfolio target"
@@ -429,10 +430,11 @@
         "edit binary gate or template-based baseline strategies",
         "edit PPOAgent action_for_env diagnostics passthrough",
         "edit backtest scheduler or final action diagnostics",
-        "edit gate_action, raw_action, raw_rho, final_action, or rebalance_intensity fields"
+        "edit gate_action, raw_gate_requested_rebalance, raw_model_requested_rebalance, raw_action, raw_rho, final_action, or rebalance_intensity fields"
       ],
       "why_risky": [
         "paper turnover metrics and scheduler diagnostics depend on distinguishing raw model intent from final executable trades",
+        "raw_gate_requested_rebalance preserves the model's pre-threshold gate output, while raw_model_requested_rebalance is the post-threshold pre-scheduler execution request",
         "binary gate, template index, partial rho, and scheduler-final action share similar field names but have different semantics"
       ],
       "related_paths": [
@@ -485,19 +487,21 @@
       ],
       "blast_radius": [
         "daily turnover metrics",
+        "raw_gate_requested_rebalance diagnostics",
         "raw_model_requested_rebalance counters",
         "scheduler_blocked_rebalance diagnostics",
         "paper table rankability and auditability"
       ],
       "check_before_edit": [
         "inspect _continuous_weight_rebalance_decision and _binary_gate_rebalance_decision before changing gate behavior",
-        "confirm raw_* diagnostics preserve model intent before threshold or scheduler finalization",
+        "confirm raw_gate_requested_rebalance is not used as raw_model_requested_rebalance before turnover threshold filtering",
+        "confirm raw_* diagnostics preserve model intent across threshold and scheduler finalization",
         "confirm gate_action is binary final action and template_action_index stores non-binary template ids",
         "confirm initial empty portfolio hold paths build a valid first position"
       ],
       "safe_observation_methods": [
         "run targeted baseline gate tests before broad experiment reruns",
-        "compare raw_model_requested_rebalance, final_action, forced_hold_reason, and realized_turnover together",
+        "compare raw_gate_requested_rebalance, raw_model_requested_rebalance, final_action, forced_hold_reason, and realized_turnover together",
         "run agent passthrough tests when adding or renaming diagnostic fields"
       ],
       "notes": []

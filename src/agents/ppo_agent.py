@@ -266,6 +266,7 @@ class PPOAgent:
             "raw_rho",
             "raw_rebalance_intensity",
             "raw_model_requested_rebalance",
+            "raw_gate_requested_rebalance",
             "raw_action",
             "final_rho",
             "final_rebalance_intensity",

@@ -811,7 +811,8 @@
         "P01",
         "P02",
         "P03",
-        "P04"
+        "P04",
+        "P07"
       ],
       "minimum_regression": [
         {
@@ -1045,6 +1046,7 @@
         "checkpoint",
         "device",
         "ppo agent",
+        "raw_gate_requested_rebalance",
         "dqn agent",
         "hybrid agent"
       ],
@@ -1244,6 +1246,7 @@
         "buy and hold",
         "rebalance gate",
         "raw gate",
+        "raw_gate_requested_rebalance",
         "final action",
         "turnover threshold",
         "dqn_only",

@@ -52,6 +52,7 @@ RELATED_WORK_ACTION_INFO_KEYS = (
     "raw_rho",
     "raw_rebalance_intensity",
     "raw_model_requested_rebalance",
+    "raw_gate_requested_rebalance",
     "raw_gate_action_index",
     "raw_action",
     "final_rho",

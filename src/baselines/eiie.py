@@ -195,10 +195,14 @@ def _continuous_weight_rebalance_decision(
     context = _mapping(decision_context)
     first_trade = bool(context.get("first_trade", bool(portfolio_state.step_index == 0 and current.sum() <= 0.0)))
     scheduler_allowed = bool(context.get("scheduler_allowed_rebalance", True))
-    requested = bool(first_trade or (scheduler_allowed and estimated_turnover > threshold + 1.0e-12))
+    raw_requested = bool(first_trade or estimated_turnover > threshold + 1.0e-12)
+    requested = bool(first_trade or (scheduler_allowed and raw_requested))
     forced_hold_reason = None
     if not requested:
-        forced_hold_reason = "scheduler_blocked" if not scheduler_allowed else "below_rebalance_turnover_threshold"
+        if raw_requested and not scheduler_allowed:
+            forced_hold_reason = "scheduler_blocked"
+        else:
+            forced_hold_reason = "below_rebalance_turnover_threshold"
     return {
         "rebalance_action": int(requested),
         "rebalance_intensity": 1.0 if requested else 0.0,
@@ -208,10 +212,10 @@ def _continuous_weight_rebalance_decision(
             "candidate_turnover": estimated_turnover,
             "candidate_turnover_estimate": estimated_turnover,
             "rebalance_turnover_threshold": threshold,
-            "raw_model_requested_rebalance": requested,
-            "raw_action": int(requested),
-            "raw_rho": 1.0 if requested else 0.0,
-            "raw_rebalance_intensity": 1.0 if requested else 0.0,
+            "raw_model_requested_rebalance": raw_requested,
+            "raw_action": int(raw_requested),
+            "raw_rho": 1.0 if raw_requested else 0.0,
+            "raw_rebalance_intensity": 1.0 if raw_requested else 0.0,
             "rebalance_intensity": 1.0 if requested else 0.0,
             "scheduler_allowed_rebalance": scheduler_allowed,
             "first_trade": first_trade,
@@ -235,16 +239,17 @@ def _binary_gate_rebalance_decision(
     context = _mapping(decision_context)
     first_trade = bool(context.get("first_trade", bool(portfolio_state.step_index == 0 and current.sum() <= 0.0)))
     scheduler_allowed = bool(context.get("scheduler_allowed_rebalance", True))
-    raw_requested = bool(int(raw_gate_action))
-    requested = bool(first_trade or (raw_requested and scheduler_allowed and estimated_turnover > threshold + 1.0e-12))
+    raw_gate_requested = bool(int(raw_gate_action))
+    raw_requested = bool(raw_gate_requested and estimated_turnover > threshold + 1.0e-12)
+    requested = bool(first_trade or (raw_requested and scheduler_allowed))
     forced_hold_reason = None
     if not requested:
-        if not raw_requested:
+        if not raw_gate_requested:
             forced_hold_reason = "model_chosen_hold"
+        elif not raw_requested:
+            forced_hold_reason = "below_rebalance_turnover_threshold"
         elif not scheduler_allowed:
             forced_hold_reason = "scheduler_blocked"
-        else:
-            forced_hold_reason = "below_rebalance_turnover_threshold"
     return {
         "rebalance_action": int(requested),
         "rebalance_intensity": 1.0 if requested else 0.0,
@@ -254,6 +259,7 @@ def _binary_gate_rebalance_decision(
             "candidate_turnover": estimated_turnover,
             "candidate_turnover_estimate": estimated_turnover,
             "rebalance_turnover_threshold": threshold,
+            "raw_gate_requested_rebalance": raw_gate_requested,
             "raw_model_requested_rebalance": raw_requested,
             "raw_action": int(raw_requested),
             "raw_rho": 1.0 if raw_requested else 0.0,
