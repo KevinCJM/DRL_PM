@@ -137,7 +137,7 @@ def _evaluate_candidates(
         ].copy()
         if model_trials.empty:
             continue
-        best = model_trials.sort_values("objective_value", ascending=False).iloc[0]
+        best = _select_activity_aware_best_trial(model_trials)
         params = json.loads(str(best.get("params_json") or "{}"))
         trial_config = _config_with_params(config, params)
         candidate_config = _reference_config(trial_config, [model_name])
@@ -170,10 +170,23 @@ def _evaluate_candidates(
         )
         comparison["best_trial_number"] = int(best["trial_number"])
         comparison["best_validation_metric"] = float(best["validation_metric"])
+        comparison["best_activity_failure_reason"] = _clean_value(best.get("activity_failure_reason"))
         comparison["best_params_json"] = json.dumps(params, ensure_ascii=False, sort_keys=True)
         comparison["pilot_run_dir"] = str(run_dir)
         frames.append(comparison)
     return frames
+
+
+def _select_activity_aware_best_trial(model_trials: pd.DataFrame) -> pd.Series:
+    complete = model_trials.loc[model_trials["state"].astype(str).eq("complete")].copy()
+    if complete.empty:
+        raise ValueError("ERR_PROMOTION_GATE_NO_COMPLETE_TRIAL")
+    if "activity_failure_reason" in complete.columns:
+        reasons = complete["activity_failure_reason"].map(_clean_value)
+        passed = complete.loc[reasons.eq("")].copy()
+        if not passed.empty:
+            complete = passed
+    return complete.sort_values("objective_value", ascending=False).iloc[0]
 
 
 def _promotion_report(candidates: pd.DataFrame, reference: pd.DataFrame, *, include_p13: bool) -> pd.DataFrame:
@@ -261,6 +274,7 @@ def _base_gate_row(model_name: str, candidate: Mapping[str, Any]) -> dict[str, A
         "validation_return_cost_risk_utility": candidate.get("validation_return_cost_risk_utility"),
         "best_trial_number": candidate.get("best_trial_number"),
         "best_validation_metric": candidate.get("best_validation_metric"),
+        "best_activity_failure_reason": candidate.get("best_activity_failure_reason"),
         "daily_returns_finite": candidate.get("daily_returns_finite"),
         "daily_nav_finite": candidate.get("daily_nav_finite"),
         "model_extension_id": MODEL_EXTENSION_ID,
@@ -278,6 +292,17 @@ def _num(record: Mapping[str, Any], key: str) -> float:
         return float(record.get(key))
     except (TypeError, ValueError):
         return float("nan")
+
+
+def _clean_value(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip()
 
 
 def main() -> None:

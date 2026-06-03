@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pandas as pd
 
 import src.experiments.run_experiment as run_experiment
+from scripts.recover_exp05_p7_formal_seed import _best_trial as _p7_recovery_best_trial
 from src.config import DEFAULT_CONFIG
 from src.experiments.pipeline import objective_metric
 from src.experiments.registry import ExperimentContext, HPOExperiment
@@ -62,6 +63,20 @@ def test_hpo_final_selection_prefers_activity_passed_trials():
 
     assert best.number == 1
     assert selected["best"].number == 1
+
+
+def test_p7_recovery_best_trial_prefers_activity_passed_trials():
+    failed_high_value = SimpleNamespace(
+        number=0,
+        value=10.0,
+        params={},
+        user_attrs={"activity_failure_reason": "failed_low_trade_activity"},
+    )
+    passed_low_value = SimpleNamespace(number=1, value=1.0, params={}, user_attrs={})
+
+    best = _p7_recovery_best_trial([failed_high_value, passed_low_value], "maximize")
+
+    assert best.number == 1
 
 
 def test_platform_native_scope_matches_native_rl_family_alias():

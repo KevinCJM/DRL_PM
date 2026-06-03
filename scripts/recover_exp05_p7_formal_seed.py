@@ -85,6 +85,18 @@ def _trial_rows(path: Path) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
+def _clean_value(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    return "" if text.lower() in {"nan", "none", "<na>"} else text
+
+
 def _root_ready(run_dir: Path) -> bool:
     manifest_path = run_dir / "logs" / "run_manifest.json"
     comparison_path = run_dir / "metrics" / "hpo_model_final_comparison.csv"
@@ -160,13 +172,27 @@ def _complete_trials(frame: pd.DataFrame) -> list[SimpleNamespace]:
         params = json.loads(params_json) if isinstance(params_json, str) and params_json else {}
         objective_value = float(getattr(row, "objective_value"))
         trial_number = int(getattr(row, "trial_number"))
-        trials.append(SimpleNamespace(number=trial_number, value=objective_value, params=dict(params)))
+        reason = _clean_value(getattr(row, "activity_failure_reason", ""))
+        trials.append(
+            SimpleNamespace(
+                number=trial_number,
+                value=objective_value,
+                params=dict(params),
+                user_attrs={"activity_failure_reason": reason},
+            )
+        )
     return trials
 
 
 def _best_trial(trials: Sequence[SimpleNamespace], direction: str) -> SimpleNamespace:
+    passed = [
+        item
+        for item in trials
+        if not _clean_value(getattr(item, "user_attrs", {}).get("activity_failure_reason", ""))
+    ]
+    selected = passed or list(trials)
     reverse = str(direction).lower() != "minimize"
-    return sorted(trials, key=lambda item: float(item.value), reverse=reverse)[0]
+    return sorted(selected, key=lambda item: float(item.value), reverse=reverse)[0]
 
 
 def _search_space_distributions(config: Mapping[str, Any], model_name: str) -> dict[str, optuna.distributions.BaseDistribution]:
@@ -240,6 +266,7 @@ def _frozen_trial(
             "train_end": row.get("train_end"),
             "duration_sec": row.get("duration_sec"),
             "fail_reason": row.get("fail_reason"),
+            "activity_failure_reason": row.get("activity_failure_reason"),
         },
     }
     if state == optuna.trial.TrialState.COMPLETE:
@@ -330,6 +357,9 @@ def _resume_or_run_interrupted_model_payload(root_experiment: HPOExperiment, mod
             row.update(_activity_audit_values(trial_result))
             activity_failure = _activity_trial_failure_reason(trial_result, model_config)
             row["activity_failure_reason"] = activity_failure or ""
+            trial.set_user_attr("activity_failure_reason", activity_failure or "")
+            for key, value in _activity_audit_values(trial_result).items():
+                trial.set_user_attr(str(key), value)
             if activity_failure and _activity_hpo_trial_hard_fail_enabled(model_config):
                 row["fail_reason"] = activity_failure
                 raise _HPOTrialFailure(activity_failure)
@@ -363,7 +393,7 @@ def _resume_or_run_interrupted_model_payload(root_experiment: HPOExperiment, mod
     if not complete_trials:
         raise RuntimeError(f"ERR_P7_RECOVERY_NO_COMPLETED_TRIAL: {model_name}")
 
-    best_trial = study.best_trial
+    best_trial = _best_trial(complete_trials, direction)
     _write_best_trial_config_snapshot(model_experiment, best_trial, model_dir)
     final_reports = _run_hpo_final_reports(model_experiment, complete_trials, direction, final_split)
     final_result = dict(final_reports["best"]["result"])

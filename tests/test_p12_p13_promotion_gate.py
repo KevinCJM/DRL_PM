@@ -74,6 +74,31 @@ def test_p12_promotion_gate_rejects_incomplete_p13_args(tmp_path):
         )
 
 
+def test_p12_promotion_gate_prefers_activity_passed_trial():
+    trials = pd.DataFrame(
+        [
+            {
+                "model_name": "cage_eiie_multilevel_gate",
+                "state": "complete",
+                "trial_number": 0,
+                "objective_value": 10.0,
+                "activity_failure_reason": "failed_low_trade_activity",
+            },
+            {
+                "model_name": "cage_eiie_multilevel_gate",
+                "state": "complete",
+                "trial_number": 1,
+                "objective_value": 1.0,
+                "activity_failure_reason": "",
+            },
+        ]
+    )
+
+    selected = gate._select_activity_aware_best_trial(trials)
+
+    assert int(selected["trial_number"]) == 1
+
+
 def _reference(model_name, *, cumulative_return, turnover, cost, mdd, cvar):
     return {
         "model_name": model_name,
