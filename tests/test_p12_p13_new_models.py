@@ -100,6 +100,26 @@ def test_gt_rcpo_lite_uses_normalized_alpha_gate_after_initial_build():
     assert action.action_info["gate_score_components"] != "{}"
 
 
+def test_gt_rcpo_lite_partial_rho_holds_when_executed_turnover_below_threshold():
+    config = _strategy_config()
+    config["execution_activity"]["model_rebalance_turnover_threshold"] = 0.02
+    strategy = GTRCPOLiteStrategy(config)
+    strategy._candidate_weights = lambda _state: np.array([0.61, 0.39])
+    strategy._rho_action = lambda **_kwargs: (0.5, {"0": 0.0, "0.5": 1.0}, {}, None)
+    strategy.set_decision_context(scheduler_allowed_rebalance=True, scheduler_pre_allowed=True, first_trade=False)
+
+    action = strategy.compute_target_weights(_decision_state(), _portfolio_state())
+
+    assert action.rebalance_action == 0
+    assert action.rebalance_intensity == 0.0
+    assert action.action_info["raw_gate_requested_rebalance"] is True
+    assert action.action_info["raw_model_requested_rebalance"] is False
+    assert action.action_info["raw_rho"] == 0.5
+    assert action.action_info["rho"] == 0.0
+    assert action.action_info["threshold_turnover_estimate"] < action.action_info["rebalance_turnover_threshold"]
+    assert action.action_info["forced_hold_reason"] == "below_rebalance_turnover_threshold"
+
+
 def test_p12_p13_configs_load_and_models_are_registered():
     paths = [
         "p12_cage_eiie_smoke.yaml",

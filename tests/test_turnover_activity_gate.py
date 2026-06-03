@@ -116,6 +116,44 @@ def test_daily_nonblocking_protocol_does_not_resurrect_threshold_hold():
     assert final.action_info["forced_hold_reason"] == "below_rebalance_turnover_threshold"
 
 
+def test_daily_gate_uses_trade_threshold_not_activity_audit_floor():
+    from src.baselines.eiie import _continuous_weight_rebalance_decision
+
+    config = deepcopy(DEFAULT_CONFIG)
+    config["rebalance"].update({"mode": "daily", "threshold_turnover": 0.10})
+    config["execution_activity"].update(
+        {
+            "protocol": "daily_gate_with_cost_constraint",
+            "scheduler_blocks_model_actions": False,
+            "model_rebalance_turnover_threshold": 0.02,
+            "min_non_initial_turnover_per_opportunity": 0.002,
+            "max_average_turnover": 0.03,
+        }
+    )
+    portfolio = PortfolioState(
+        date=pd.Timestamp("2024-01-02"),
+        nav=1.0,
+        portfolio_value=100.0,
+        current_weights=np.array([0.25, 0.25, 0.25, 0.25]),
+        step_index=3,
+    )
+
+    decision = _continuous_weight_rebalance_decision(
+        config,
+        "eiie_native",
+        portfolio,
+        np.array([0.265, 0.235, 0.25, 0.25]),
+        {"first_trade": False, "scheduler_allowed_rebalance": True},
+    )
+
+    assert decision["rebalance_action"] == 0
+    assert decision["rebalance_intensity"] == 0.0
+    assert decision["action_info"]["estimated_turnover"] == pytest.approx(0.015)
+    assert decision["action_info"]["rebalance_turnover_threshold"] == pytest.approx(0.02)
+    assert decision["action_info"]["raw_model_requested_rebalance"] is False
+    assert decision["action_info"]["forced_hold_reason"] == "below_rebalance_turnover_threshold"
+
+
 def test_activity_metrics_include_protocol_labels():
     metrics = _activity_metrics(
         [

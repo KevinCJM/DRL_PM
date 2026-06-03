@@ -66,6 +66,44 @@ def test_p16_action_emits_raw_rho_before_scheduler_finalization():
     np.testing.assert_allclose(action.target_weights.sum(), 1.0)
 
 
+def test_p16_partial_rho_holds_when_executed_turnover_below_threshold():
+    config = _strategy_config()
+    config["ra_gt_rcpo"]["rho_policy"] = "straight_through_gumbel_softmax_v1"
+    config["execution_activity"]["model_rebalance_turnover_threshold"] = 0.02
+    strategy = RiskAwareGTRCPOStrategy(config)
+    strategy._agent.select_action = lambda *_args: {
+        "candidate_weights": np.array([0.61, 0.39]),
+        "raw_rho": 0.5,
+        "rho": 0.5,
+        "rho_action_index": 2,
+        "rho_probs": [0.0, 0.0, 1.0, 0.0, 0.0],
+        "rho_logits": [-10.0, -10.0, 10.0, -10.0, -10.0],
+        "rho_entropy": 0.0,
+        "rho_expected": 0.5,
+        "rho_eval_mode": "argmax",
+        "rho_eval_entropy_normalized": 0.0,
+        "rho_eval_used_expected": False,
+        "graph_density": 0.0,
+        "mean_abs_correlation": 0.0,
+        "value_return": 0.0,
+        "value_cost": 0.0,
+        "value_drawdown": 0.0,
+        "value_cvar_loss": 0.0,
+    }
+    strategy.set_decision_context(scheduler_allowed_rebalance=True, scheduler_pre_allowed=True, first_trade=False)
+
+    action = strategy.compute_target_weights(_decision_state(), _portfolio_state())
+
+    assert action.rebalance_action == 0
+    assert action.rebalance_intensity == 0.0
+    assert action.action_info["raw_gate_requested_rebalance"] is True
+    assert action.action_info["raw_model_requested_rebalance"] is False
+    assert action.action_info["raw_rho"] == 0.5
+    assert action.action_info["rho"] == 0.0
+    assert action.action_info["threshold_turnover_estimate"] < action.action_info["rebalance_turnover_threshold"]
+    assert action.action_info["forced_hold_reason"] == "below_rebalance_turnover_threshold"
+
+
 def test_p16_configs_load_and_models_are_registered():
     paths = [
         "p16_ra_gt_rcpo_smoke.yaml",

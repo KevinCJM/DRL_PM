@@ -55,6 +55,57 @@ def estimate_cost(config: Mapping[str, Any], turnover: float) -> float:
     return float(turnover * (proportional + slippage) + impact * turnover * turnover)
 
 
+def rebalance_turnover_threshold(config: Mapping[str, Any], model_key: str) -> float:
+    model_config = mapping(config.get(model_key))
+    for key in ("rebalance_turnover_threshold", "turnover_gate_threshold", "min_rebalance_turnover"):
+        if model_config.get(key) is not None:
+            return _non_negative_float(model_config[key])
+    activity = mapping(config.get("execution_activity"))
+    for key in ("model_rebalance_turnover_threshold", "rebalance_turnover_threshold", "turnover_gate_threshold"):
+        if activity.get(key) is not None:
+            return _non_negative_float(activity[key])
+    rebalance = mapping(config.get("rebalance"))
+    if str(rebalance.get("mode", "")) == "threshold_turnover":
+        return _non_negative_float(rebalance.get("threshold_turnover", 0.0))
+    return 0.0
+
+
+def partial_rho_execution_decision(
+    config: Mapping[str, Any],
+    model_key: str,
+    *,
+    raw_rho: float,
+    estimated_turnover: float,
+    first_trade: bool,
+    model_hold_reason: str | None = None,
+) -> dict[str, Any]:
+    raw = float(np.clip(float(raw_rho), 0.0, 1.0))
+    threshold = rebalance_turnover_threshold(config, model_key)
+    raw_gate_requested = bool(raw > 0.0)
+    threshold_turnover = float(raw * float(estimated_turnover))
+    raw_requested = bool(first_trade or (raw_gate_requested and threshold_turnover > threshold + 1.0e-12))
+    rho = 1.0 if first_trade else (raw if raw_requested else 0.0)
+    forced_hold_reason = None
+    if rho <= 0.0:
+        if raw_gate_requested and not raw_requested:
+            forced_hold_reason = "below_rebalance_turnover_threshold"
+        else:
+            forced_hold_reason = model_hold_reason or "model_chosen_hold"
+    return {
+        "rho": float(rho),
+        "rebalance_action": int(rho > 0.0),
+        "rebalance_intensity": float(rho),
+        "raw_rho": raw,
+        "raw_gate_requested_rebalance": raw_gate_requested,
+        "raw_model_requested_rebalance": raw_requested,
+        "raw_action": int(raw_requested),
+        "raw_rebalance_intensity": raw if raw_requested else 0.0,
+        "rebalance_turnover_threshold": threshold,
+        "threshold_turnover_estimate": threshold_turnover,
+        "forced_hold_reason": forced_hold_reason,
+    }
+
+
 def decision_return_features(log_return_window: Any, fallback_returns: Sequence[float] | None = None) -> dict[str, float]:
     window = np.asarray(log_return_window, dtype=float)
     if window.ndim == 3:
@@ -282,4 +333,11 @@ def _positive_scale(value: Any, name: str) -> float:
     result = float(value)
     if result <= 0.0 or not np.isfinite(result):
         raise ValueError(f"ERR_GATE_SCORING_SCALE_INVALID: {name}")
+    return result
+
+
+def _non_negative_float(value: Any) -> float:
+    result = float(value)
+    if not np.isfinite(result) or result < 0.0:
+        raise ValueError("ERR_REBALANCE_THRESHOLD_INVALID")
     return result

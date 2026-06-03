@@ -281,11 +281,6 @@ def _rebalance_turnover_threshold(config: Mapping[str, Any], model_key: str) -> 
     for key in ("model_rebalance_turnover_threshold", "rebalance_turnover_threshold", "turnover_gate_threshold"):
         if activity.get(key) is not None:
             return _non_negative_float(activity[key])
-    if str(activity.get("protocol", "")) == "daily_gate_with_cost_constraint":
-        if activity.get("max_average_turnover") is not None:
-            return _non_negative_float(activity["max_average_turnover"])
-        if activity.get("min_non_initial_turnover_per_opportunity") is not None:
-            return _non_negative_float(activity["min_non_initial_turnover_per_opportunity"])
     rebalance = _mapping(config.get("rebalance"))
     if str(rebalance.get("mode", "")) == "threshold_turnover":
         return _non_negative_float(rebalance.get("threshold_turnover", 0.0))

@@ -42,7 +42,9 @@ class ConstrainedActorCriticConfig:
     rho_tau_start: float = 1.0
     rho_tau_end: float = 0.20
     rho_tau_decay_steps: int = 2048
+    rho_eval_mode: str = "argmax"
     rho_min_entropy_threshold: float = 0.05
+    rho_eval_high_entropy_threshold: float = 0.80
     budget: ConstraintBudget = ConstraintBudget()
     multipliers: ConstraintMultipliers = ConstraintMultipliers()
 
@@ -126,16 +128,20 @@ class ConstrainedActorCriticAgent:
         mask = torch.as_tensor(availability_mask, dtype=torch.bool, device=self.device).reshape(1, -1)
         output = self.model(image, current, mask)
         candidate = output.candidate_weights.squeeze(0).detach().cpu().numpy()
+        rho_eval = _rho_for_eval(output, self.config, self.model.rho_values)
         return {
             "candidate_weights": candidate,
-            "raw_rho": float(output.rho.squeeze(0).detach().cpu()),
-            "rho": float(output.rho.squeeze(0).detach().cpu()),
-            "rho_action_index": int(output.rho_action_index.squeeze(0).detach().cpu()),
+            "raw_rho": float(rho_eval["rho"]),
+            "rho": float(rho_eval["rho"]),
+            "rho_action_index": int(rho_eval["rho_action_index"]),
             "rho_probs": output.rho_probs.squeeze(0).detach().cpu().numpy().tolist(),
             "rho_logits": output.rho_logits.squeeze(0).detach().cpu().numpy().tolist(),
             "rho_entropy": float(output.rho_entropy.squeeze(0).detach().cpu()),
             "rho_expected": float(output.rho_expected.squeeze(0).detach().cpu()),
             "rho_policy_mode": str(self.config.rho_policy_mode),
+            "rho_eval_mode": str(self.config.rho_eval_mode),
+            "rho_eval_entropy_normalized": float(rho_eval["rho_entropy_normalized"]),
+            "rho_eval_used_expected": bool(rho_eval["rho_eval_used_expected"]),
             "value_return": float(output.value_return.squeeze(0).detach().cpu()),
             "value_cost": float(output.value_cost.squeeze(0).detach().cpu()),
             "value_drawdown": float(output.value_drawdown.squeeze(0).detach().cpu()),
@@ -255,7 +261,11 @@ def agent_config_from_mapping(config: Mapping[str, Any], *, section: Mapping[str
         rho_tau_start=float(rho_temperature.get("tau_start", 1.0)),
         rho_tau_end=float(rho_temperature.get("tau_end", 0.20)),
         rho_tau_decay_steps=max(1, int(rho_temperature.get("tau_decay_steps", 2048))),
+        rho_eval_mode=str(rho_temperature.get("eval_mode", section.get("rho_eval_mode", "argmax"))),
         rho_min_entropy_threshold=float(rho_temperature.get("min_entropy_threshold", 0.05)),
+        rho_eval_high_entropy_threshold=float(
+            rho_temperature.get("eval_high_entropy_threshold", section.get("rho_eval_high_entropy_threshold", 0.80))
+        ),
         budget=ConstraintBudget(
             average_turnover_per_step=float(section.get("average_turnover_per_step_budget", 0.20)),
             average_cost_per_step=float(section.get("average_cost_per_step_budget", 0.001)),
@@ -306,6 +316,31 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 
 def _uses_learned_rho(mode: str) -> bool:
     return str(mode) in {"learned", "straight_through_gumbel_softmax_v1"}
+
+
+def _rho_for_eval(output: Any, config: ConstrainedActorCriticConfig, rho_values: torch.Tensor) -> dict[str, float | int | bool]:
+    action_index = int(output.rho_action_index.squeeze(0).detach().cpu())
+    rho = float(output.rho.squeeze(0).detach().cpu())
+    entropy = float(output.rho_entropy.squeeze(0).detach().cpu())
+    count = max(1, int(rho_values.numel()))
+    max_entropy = float(np.log(count)) if count > 1 else 1.0
+    entropy_normalized = 0.0 if max_entropy <= 0.0 else float(entropy / max_entropy)
+    use_expected = False
+    if _uses_learned_rho(config.rho_policy_mode):
+        mode = str(config.rho_eval_mode)
+        high_entropy = entropy_normalized >= float(config.rho_eval_high_entropy_threshold)
+        use_expected = mode in {"expected", "expected_nearest"} or (mode == "argmax" and high_entropy)
+    if use_expected:
+        expected = float(output.rho_expected.squeeze(0).detach().cpu())
+        values = rho_values.detach().cpu().numpy().astype(float)
+        action_index = int(np.argmin(np.abs(values - expected)))
+        rho = float(values[action_index])
+    return {
+        "rho": rho,
+        "rho_action_index": action_index,
+        "rho_entropy_normalized": entropy_normalized,
+        "rho_eval_used_expected": use_expected,
+    }
 
 
 def _rho_temperature(config: ConstrainedActorCriticConfig, step: int) -> float:

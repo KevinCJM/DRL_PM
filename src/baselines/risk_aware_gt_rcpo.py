@@ -19,6 +19,7 @@ from src.baselines.cage_common import (
     gate_action_index,
     mapping,
     normalize_candidate,
+    partial_rho_execution_decision,
     score_rho_normalized,
     weights_json,
 )
@@ -152,7 +153,18 @@ class RiskAwareGTRCPOStrategy(BaseStrategy):
             drawdown=float(portfolio.current_drawdown_abs),
         )
         rho_values = _rho_values(self.config)
+        raw_rho = float(rho)
+        execution_decision = partial_rho_execution_decision(
+            self.config,
+            "ra_gt_rcpo",
+            raw_rho=raw_rho,
+            estimated_turnover=turnover,
+            first_trade=first_trade,
+            model_hold_reason=forced_hold_reason,
+        )
+        rho = float(execution_decision["rho"])
         action_index = gate_action_index(rho_values, rho)
+        raw_action_index = gate_action_index(rho_values, raw_rho)
         violations = _constraint_violation_count(
             turnover=turnover,
             cost=cost,
@@ -172,11 +184,15 @@ class RiskAwareGTRCPOStrategy(BaseStrategy):
             "gate_action": int(rho > 0.0),
             "gate_action_index": int(action_index),
             "rho": float(rho),
-            "raw_rho": float(rho),
-            "raw_rebalance_intensity": float(rho),
-            "raw_model_requested_rebalance": bool(rho > 0.0),
-            "raw_gate_action_index": int(action_index),
-            "rebalance_intensity": float(rho),
+            "raw_rho": float(execution_decision["raw_rho"]),
+            "raw_rebalance_intensity": float(execution_decision["raw_rebalance_intensity"]),
+            "raw_gate_requested_rebalance": bool(execution_decision["raw_gate_requested_rebalance"]),
+            "raw_model_requested_rebalance": bool(execution_decision["raw_model_requested_rebalance"]),
+            "raw_action": int(execution_decision["raw_action"]),
+            "raw_gate_action_index": int(raw_action_index),
+            "rebalance_intensity": float(execution_decision["rebalance_intensity"]),
+            "rebalance_turnover_threshold": float(execution_decision["rebalance_turnover_threshold"]),
+            "threshold_turnover_estimate": float(execution_decision["threshold_turnover_estimate"]),
             "rebalance_values": json.dumps(scores, sort_keys=True, separators=(",", ":")),
             "gate_score_components": json.dumps(score_components, sort_keys=True, separators=(",", ":")),
             "gate_scoring_mode": str(_gate_scoring_config(self.config, "ra_gt_rcpo").get("mode", "normalized")),
@@ -195,7 +211,7 @@ class RiskAwareGTRCPOStrategy(BaseStrategy):
             "scheduler_allowed_rebalance": bool(scheduler_allowed),
             "scheduler_pre_allowed": bool(context.get("scheduler_pre_allowed", scheduler_allowed)),
             "first_trade": bool(first_trade),
-            "forced_hold_reason": forced_hold_reason,
+            "forced_hold_reason": execution_decision["forced_hold_reason"],
             "execution_weight_mode": "candidate_plus_rho_execution_core",
             "candidate_weights_json": weights_json(candidate),
             "decision_time_current_weights_json": weights_json(current),
@@ -218,6 +234,9 @@ class RiskAwareGTRCPOStrategy(BaseStrategy):
             "rho_expected": float(action.get("rho_expected", np.nan)),
             "rho_action_index": int(action.get("rho_action_index", action_index)),
             "rho_policy_mode": str(section.get("rho_policy", "score_rho_normalized")),
+            "rho_eval_mode": str(action.get("rho_eval_mode", "argmax")),
+            "rho_eval_entropy_normalized": float(action.get("rho_eval_entropy_normalized", np.nan)),
+            "rho_eval_used_expected": bool(action.get("rho_eval_used_expected", False)),
             "lambda_turnover": float(section.get("lambda_turnover", 2.0)),
             "lambda_cost": float(section.get("lambda_cost", 10.0)),
             "lambda_cvar": float(section.get("lambda_cvar", 0.35)),
@@ -231,8 +250,8 @@ class RiskAwareGTRCPOStrategy(BaseStrategy):
         return self.validate_portfolio_action(
             PortfolioAction(
                 target_weights=candidate,
-                rebalance_action=1 if rho > 0.0 else 0,
-                rebalance_intensity=float(rho),
+                rebalance_action=int(execution_decision["rebalance_action"]),
+                rebalance_intensity=float(execution_decision["rebalance_intensity"]),
                 action_info=action_info,
             )
         )

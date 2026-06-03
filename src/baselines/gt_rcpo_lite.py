@@ -20,6 +20,7 @@ from src.baselines.cage_common import (
     mapping,
     new_model_training_result,
     normalize_candidate,
+    partial_rho_execution_decision,
     rho_grid,
     score_rho_normalized,
     weights_json,
@@ -112,7 +113,18 @@ class GTRCPOLiteStrategy(BaseStrategy):
             cvar_loss_5=risk["cvar_loss_5"],
             drawdown=float(portfolio.current_drawdown_abs),
         )
+        raw_rho = float(rho)
+        execution_decision = partial_rho_execution_decision(
+            self.config,
+            "gt_rcpo_lite",
+            raw_rho=raw_rho,
+            estimated_turnover=turnover,
+            first_trade=first_trade,
+            model_hold_reason=forced_hold_reason,
+        )
+        rho = float(execution_decision["rho"])
         action_index = gate_action_index(self.rho_values, rho)
+        raw_action_index = gate_action_index(self.rho_values, raw_rho)
         action_info = {
             "strategy": self.strategy_name,
             "paper_model_id": self.strategy_name,
@@ -125,12 +137,15 @@ class GTRCPOLiteStrategy(BaseStrategy):
             "gate_action": int(rho > 0.0),
             "gate_action_index": int(action_index),
             "rho": float(rho),
-            "raw_rho": float(rho),
-            "raw_rebalance_intensity": float(rho),
-            "raw_model_requested_rebalance": bool(rho > 0.0),
-            "raw_action": int(rho > 0.0),
-            "raw_gate_action_index": int(action_index),
-            "rebalance_intensity": float(rho),
+            "raw_rho": float(execution_decision["raw_rho"]),
+            "raw_rebalance_intensity": float(execution_decision["raw_rebalance_intensity"]),
+            "raw_gate_requested_rebalance": bool(execution_decision["raw_gate_requested_rebalance"]),
+            "raw_model_requested_rebalance": bool(execution_decision["raw_model_requested_rebalance"]),
+            "raw_action": int(execution_decision["raw_action"]),
+            "raw_gate_action_index": int(raw_action_index),
+            "rebalance_intensity": float(execution_decision["rebalance_intensity"]),
+            "rebalance_turnover_threshold": float(execution_decision["rebalance_turnover_threshold"]),
+            "threshold_turnover_estimate": float(execution_decision["threshold_turnover_estimate"]),
             "rebalance_values": json.dumps(scores, sort_keys=True, separators=(",", ":")),
             "gate_score_components": json.dumps(score_components, sort_keys=True, separators=(",", ":")),
             "gate_scoring_mode": str(gate_scoring.get("mode", "normalized")),
@@ -153,7 +168,7 @@ class GTRCPOLiteStrategy(BaseStrategy):
             "scheduler_allowed_rebalance": bool(scheduler_allowed),
             "scheduler_pre_allowed": bool(context.get("scheduler_pre_allowed", scheduler_allowed)),
             "first_trade": bool(first_trade),
-            "forced_hold_reason": forced_hold_reason,
+            "forced_hold_reason": execution_decision["forced_hold_reason"],
             "execution_weight_mode": "candidate_plus_rho_execution_core",
             "candidate_weights_json": weights_json(candidate),
             "decision_time_current_weights_json": weights_json(current),
@@ -166,8 +181,8 @@ class GTRCPOLiteStrategy(BaseStrategy):
         return self.validate_portfolio_action(
             PortfolioAction(
                 target_weights=candidate,
-                rebalance_action=1 if rho > 0.0 else 0,
-                rebalance_intensity=float(rho),
+                rebalance_action=int(execution_decision["rebalance_action"]),
+                rebalance_intensity=float(execution_decision["rebalance_intensity"]),
                 action_info=action_info,
             )
         )
