@@ -46,6 +46,7 @@
       "*_原始需求.md",
       "*_需求澄清.md",
       "*_详细设计.md",
+      "*_实验设计.md",
       "*_任务单.json",
       "*_任务单.md",
       "*_评审记录*.json",
@@ -56,7 +57,16 @@
       "*_开发前期.md",
       "*_与人类交流.md",
       "*_人机交互澄清记录.md",
-      "*_需求分析师反馈.md"
+      "*_需求分析师反馈.md",
+      "deep-research-report.md",
+      ".idea/**",
+      "*_整体代码复核记录*.md",
+      "*_整体复核记录*.json",
+      "实验设计*.md",
+      "outputs/**",
+      "configs/paper/_tmp_diag_active/**",
+      "*_全流程主入口详细设计.md",
+      "*结果分析报告.md"
     ]
   },
   "reproducibility": {
@@ -83,7 +93,9 @@
         "uncovered_files",
         "routing_only_violations",
         "suggested_updates",
-        "exit_code_reason"
+        "exit_code_reason",
+        "missing_required_files",
+        "next_action"
       ]
     }
   }

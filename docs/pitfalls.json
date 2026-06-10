@@ -505,6 +505,396 @@
         "run agent passthrough tests when adding or renaming diagnostic fields"
       ],
       "notes": []
+    },
+    {
+      "id": "P08",
+      "title": "Activity gate and promotion eligibility must block formal selection",
+      "severity": "high",
+      "confidence": "high",
+      "symptoms": [
+        "activity-failed HPO trial is selected as best, median, worst, or equal-budget winner",
+        "P16 formal or final waiter starts after promotion_gate_report.csv has no passing row",
+        "CAGE or GT-RCPO reports a rebalance while executed turnover remains below active floor",
+        "learned rho policy collapses to zero without normalized gate activity fallback"
+      ],
+      "trigger_actions": [
+        "edit execution_activity config handling",
+        "edit HPO best-trial or final-report selection",
+        "edit CAGE, GT-RCPO, or RA-GT-RCPO gate helpers",
+        "edit P16 paper automation waiter scripts",
+        "edit final_activity_failure_reason, activity_turnover_floor_applied, or learned_rho_policy_adjustment_reason fields"
+      ],
+      "why_risky": [
+        "formal paper results depend on activity-passed trials and promotion gates, not only finite validation score",
+        "turnover-active conclusions are invalid if low-activity trials or failed promotion gates can enter formal outputs"
+      ],
+      "related_paths": [
+        {
+          "kind": "file",
+          "ref": "src/baselines/cage_common.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/cage_eiie.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/gt_rcpo_lite.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/risk_aware_gt_rcpo.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/run_experiment.py"
+        },
+        {
+          "kind": "file",
+          "ref": "scripts/exp40d_p16_final_early.sh"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_cage_gate_scoring.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_hpo_activity_metric.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_p16_ra_gt_rcpo.py"
+        }
+      ],
+      "affected_modules": [
+        {
+          "kind": "module",
+          "ref": "config_surface"
+        },
+        {
+          "kind": "module",
+          "ref": "baseline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "experiment_pipeline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "ops_scripts_family"
+        }
+      ],
+      "blast_radius": [
+        "HPO best config snapshots",
+        "paper formal run gating",
+        "promotion gate eligibility",
+        "turnover activity diagnostics",
+        "P16 learned rho rankability"
+      ],
+      "check_before_edit": [
+        "confirm final_activity_failure_reason filters HPO payload and final report selection",
+        "confirm activity floor is skipped for hold and first-trade paths",
+        "confirm promotion_gate_report.csv failed status prevents formal/final waiter startup",
+        "confirm learned rho zero fallback records learned_rho_policy_adjustment_reason"
+      ],
+      "safe_observation_methods": [
+        "run tests/test_hpo_activity_metric.py for HPO selection changes",
+        "run tests/test_cage_gate_scoring.py and tests/test_p16_ra_gt_rcpo.py for activity floor or learned rho fallback changes",
+        "run bash -n scripts/exp40d_p16_final_early.sh after waiter script edits"
+      ],
+      "notes": []
+    },
+    {
+      "id": "P09",
+      "title": "Replay buffer transition schema and CQR gate consistency must stay aligned",
+      "severity": "high",
+      "confidence": "medium",
+      "symptoms": [
+        "ReplayItem construction fails after adding transition fields",
+        "as_batch omits fields consumed by CQR gate training",
+        "checkpoint restore drops replay-buffer transition payloads",
+        "gate=0 or gate=1 transitions mismatch executed versus candidate weights"
+      ],
+      "trigger_actions": [
+        "edit ReplayItem fields",
+        "edit ReplayBuffer.as_batch or validate_cqr_fields",
+        "edit prioritized replay n-step commit behavior",
+        "edit checkpoint replay-buffer serialization or restore"
+      ],
+      "why_risky": [
+        "training, resume, and CQR gate diagnostics share the same replay transition payload"
+      ],
+      "related_paths": [
+        {
+          "kind": "file",
+          "ref": "src/buffers/replay_buffer.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/buffers/prioritized_replay_buffer.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/utils/checkpoint.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_buffers.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_checkpoint.py"
+        }
+      ],
+      "affected_modules": [
+        {
+          "kind": "module",
+          "ref": "buffer_runtime_family"
+        },
+        {
+          "kind": "module",
+          "ref": "agent_training_family"
+        },
+        {
+          "kind": "module",
+          "ref": "baseline_family"
+        }
+      ],
+      "blast_radius": [
+        "training batches",
+        "checkpoint resume",
+        "CQR gate replay diagnostics"
+      ],
+      "check_before_edit": [
+        "confirm ReplayItem defaults and to_dict/as_batch key parity",
+        "confirm q_gap_t equals q_rebalance_t minus q_hold_t when present",
+        "confirm checkpoint replay-buffer state round-trips changed fields"
+      ],
+      "safe_observation_methods": [
+        "run tests/test_buffers.py and tests/test_checkpoint.py together",
+        "inspect ReplayBuffer.validate_cqr_fields before changing gate transition fields"
+      ],
+      "notes": []
+    },
+    {
+      "id": "P10",
+      "title": "OTAR S0 protocol freeze and formal matrix must stay canonical",
+      "severity": "high",
+      "confidence": "high",
+      "symptoms": [
+        "ERR_OTAR_S0_PROTOCOL_HASH_DRIFT_POST_FREEZE",
+        "ERR_OTAR_V2_FULL_UNFROZEN_MATRIX",
+        "ERR_OTAR_S0_GRID_TEST_PEEKING_NOT_BLOCKED",
+        "ERR_OTAR_S0_SCHEMA_FORBIDDEN_FIELDS_INCOMPLETE",
+        "formal run starts from a non-canonical matrix or unmanaged config"
+      ],
+      "trigger_actions": [
+        "edit configs/paper/otar_*.yaml or configs/data/small8_universe.yaml",
+        "edit scripts/validate_otar_s0_protocol.py",
+        "edit src/experiments/otar_v2_full.py",
+        "change protocol_id, data_cutoff_date, RUN_CONFIGS, HPO grids, or schema_freeze fields"
+      ],
+      "why_risky": [
+        "OTAR formal outputs are only comparable when the frozen S0 config, schema, grid, and formal matrix set stay internally consistent",
+        "post-freeze managed-file drift must bump protocol_id instead of silently reusing old lineage"
+      ],
+      "related_paths": [
+        {
+          "kind": "file",
+          "ref": "scripts/validate_otar_s0_protocol.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/otar_v2_full.py"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_formal_matrix.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_small8_smoke.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_small8_pilot.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_core13_robustness.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_cqr_hpo_grid.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_actor_policy_hpo_grid.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_baseline_contracts.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_s0_schemas/schema_freeze.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/data/small8_universe.yaml"
+        }
+      ],
+      "affected_modules": [
+        {
+          "kind": "module",
+          "ref": "config_surface"
+        },
+        {
+          "kind": "module",
+          "ref": "experiment_pipeline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "ops_scripts_family"
+        },
+        {
+          "kind": "module",
+          "ref": "otar_v2_protocol_family"
+        }
+      ],
+      "blast_radius": [
+        "OTAR formal matrix selection",
+        "protocol manifests",
+        "paper aggregate eligibility",
+        "HPO no-test-peeking guarantees"
+      ],
+      "check_before_edit": [
+        "run scripts/validate_otar_s0_protocol.py before and after managed config changes",
+        "confirm canonical matrix path and frozen run config set",
+        "confirm schema_freeze forbidden aliases and no-test-peeking grid flags remain present"
+      ],
+      "safe_observation_methods": [
+        "use dry-run OTAR full pipeline tests for orchestration edits",
+        "inspect generated outputs only as artifacts, not as protocol truth"
+      ],
+      "notes": []
+    },
+    {
+      "id": "P11",
+      "title": "OTAR CQR gate risk-state, replay, and diagnostics schemas must stay aligned",
+      "severity": "high",
+      "confidence": "high",
+      "symptoms": [
+        "ERR_OBSERVATION_RISK_STATE_MISSING",
+        "ERR_CQR_REPLAY_ITEM_MISSING_FIELD",
+        "ERR_CQR_GATE_CONSISTENCY",
+        "tail calibration reports forbidden_calibration_label or missing boundary fields",
+        "daily diagnostics use forbidden CVaR field aliases instead of lower-tail/soft-tail names"
+      ],
+      "trigger_actions": [
+        "edit RiskStateManager observation fields or model.use_risk_state handling",
+        "edit OTarCQRGate candidate/hold utility, lower-tail quantile fields, or gate_margin behavior",
+        "edit OTarCQRGateStrategy replay item construction or cost estimation",
+        "edit backtest daily diagnostics, schema_freeze, TailCalibrator, or replay buffer CQR fields"
+      ],
+      "why_risky": [
+        "OTAR policy, environment, replay buffer, output schema, and calibration code share the same risk-state and CQR diagnostics field contract",
+        "candidate, hold, raw gate, executed gate, and pre-trade drifted weights have distinct semantics used by cost, replay, and paper tables"
+      ],
+      "related_paths": [
+        {
+          "kind": "file",
+          "ref": "src/envs/risk_state_manager.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/portfolio_rebalance_env.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/backtest_engine.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/reward_calculator.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/models/otar_cqr_gate.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/otar_cqr_gate_strategy.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/buffers/replay_buffer.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/tail_calibration.py"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_s0_schemas/schema_freeze.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_cqr_gate_contract.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_replay_buffer_contract.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_risk_state_visibility.py"
+        }
+      ],
+      "affected_modules": [
+        {
+          "kind": "module",
+          "ref": "env_runtime_family"
+        },
+        {
+          "kind": "module",
+          "ref": "model_otar_cqr_family"
+        },
+        {
+          "kind": "module",
+          "ref": "buffer_runtime_family"
+        },
+        {
+          "kind": "module",
+          "ref": "baseline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "experiment_pipeline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "otar_v2_protocol_family"
+        }
+      ],
+      "blast_radius": [
+        "risk_state observations",
+        "CQR replay batches",
+        "candidate versus hold gate decisions",
+        "daily diagnostics",
+        "tail calibration and paper aggregate tables"
+      ],
+      "check_before_edit": [
+        "confirm RiskStateManager keeps an 8-element observation vector and matching diagnostics keys",
+        "confirm ReplayItem CQR fields and as_batch keys stay in parity with OTarCQRGateStrategy",
+        "confirm schema_freeze uses lower-tail/soft-tail names and keeps forbidden CVaR aliases blocked",
+        "confirm TailCalibrator only uses validation/test rows with episode_id, timestep, done_t, split, executed_gate_action, and predicted_5pct_quantile_executed"
+      ],
+      "safe_observation_methods": [
+        "run OTAR CQR, replay, risk-state, reward-accounting, and tail-calibration tests together",
+        "compare candidate_weights_json, pre_trade_drifted_weights_json, executed_gate_action, predicted_5pct_quantile_executed, and cost_estimation_error_t together"
+      ],
+      "notes": []
     }
   ]
 }

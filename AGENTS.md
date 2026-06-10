@@ -6,6 +6,9 @@ Machine-first routing protocol for this subtree only.
 - Parent inspection/routing is forbidden.
 - Cross-boundary edges must be marked `out_of_scope`.
 
+# Runtime Environment
+- Use `/Users/chenjunming/Desktop/myenv_312/bin` for environment binaries.
+
 # Required Read Order
 1. `docs/repo_map.json`
 2. `docs/task_routes.json`

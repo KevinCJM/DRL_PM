@@ -66,6 +66,42 @@
       {
         "kind": "file",
         "ref": "scripts/rebuild_etf_lof_data.py"
+      },
+      {
+        "kind": "file",
+        "ref": "src/data/splits.py"
+      },
+      {
+        "kind": "file",
+        "ref": "src/envs/risk_state_manager.py"
+      },
+      {
+        "kind": "file",
+        "ref": "src/models/otar_cqr_gate.py"
+      },
+      {
+        "kind": "file",
+        "ref": "src/baselines/otar_cqr_gate_strategy.py"
+      },
+      {
+        "kind": "file",
+        "ref": "src/experiments/otar_v2_full.py"
+      },
+      {
+        "kind": "file",
+        "ref": "src/experiments/tail_calibration.py"
+      },
+      {
+        "kind": "file",
+        "ref": "scripts/validate_otar_s0_protocol.py"
+      },
+      {
+        "kind": "file",
+        "ref": "configs/paper/otar_formal_matrix.yaml"
+      },
+      {
+        "kind": "file",
+        "ref": "configs/paper/otar_s0_schemas/schema_freeze.yaml"
       }
     ],
     "sampled_directories": [
@@ -100,6 +136,22 @@
       {
         "kind": "dir",
         "ref": "tests"
+      },
+      {
+        "kind": "dir",
+        "ref": "src/buffers"
+      },
+      {
+        "kind": "dir",
+        "ref": "configs/data"
+      },
+      {
+        "kind": "dir",
+        "ref": "src/utils"
+      },
+      {
+        "kind": "dir",
+        "ref": "configs/paper/otar_s0_schemas"
       }
     ]
   },
@@ -115,7 +167,11 @@
       "purpose": [
         "experiment yaml surface",
         "baseline yaml surface",
-        "pytest discovery and dependency surface"
+        "pytest discovery and dependency surface",
+        "paper experiment yaml surface",
+        "asset universe yaml surface",
+        "paper protocol universe surface",
+        "OTAR V2 protocol, S0 schema, HPO-grid, and formal-matrix yaml surface"
       ],
       "task_keywords": [
         "config",
@@ -123,7 +179,20 @@
         "experiment",
         "baseline",
         "dependency",
-        "pytest"
+        "pytest",
+        "paper config",
+        "active formal",
+        "execution_activity",
+        "asset universe",
+        "small8",
+        "core13 universe",
+        "configs/data",
+        "otar",
+        "S0",
+        "protocol freeze",
+        "schema_freeze",
+        "hpo grid",
+        "formal matrix"
       ],
       "entry_files": [
         {
@@ -141,6 +210,14 @@
         {
           "kind": "file",
           "ref": "configs/experiments/main.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_formal_matrix.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_small8_pilot.yaml"
         }
       ],
       "key_symbols": [
@@ -158,6 +235,10 @@
         {
           "kind": "file",
           "ref": "configs/baselines.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_formal_matrix.yaml"
         }
       ],
       "then_check_files": [
@@ -176,6 +257,38 @@
         {
           "kind": "dir",
           "ref": "configs/experiments"
+        },
+        {
+          "kind": "dir",
+          "ref": "configs/paper"
+        },
+        {
+          "kind": "dir",
+          "ref": "configs/data"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_small8_smoke.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_core13_robustness.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_cqr_hpo_grid.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_actor_policy_hpo_grid.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_baseline_contracts.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_s0_schemas/schema_freeze.yaml"
         }
       ],
       "upstream_dependencies": [],
@@ -222,6 +335,14 @@
         {
           "kind": "file",
           "ref": "tests/test_experiments.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_protocol_schemas.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_run_config_contract.py"
         }
       ],
       "related_configs": [
@@ -240,11 +361,23 @@
         {
           "kind": "dir",
           "ref": "configs/experiments"
+        },
+        {
+          "kind": "dir",
+          "ref": "configs/paper"
+        },
+        {
+          "kind": "dir",
+          "ref": "configs/data"
         }
       ],
       "risk_flags": [
         "config_fanout",
-        "dependency_surface"
+        "dependency_surface",
+        "active_formal_config_contract",
+        "asset_universe_config_contract",
+        "otar_s0_protocol_config_contract",
+        "no_test_peeking_hpo_grid_contract"
       ],
       "edit_risk": "medium",
       "blast_radius": [
@@ -253,12 +386,21 @@
         "pytest discovery"
       ],
       "pitfall_ids": [
-        "P06"
+        "P06",
+        "P10"
       ],
       "minimum_regression": [
         {
           "kind": "command",
           "ref": "pytest tests/test_config.py tests/test_cli_entrypoint.py tests/test_experiments.py"
+        },
+        {
+          "kind": "command",
+          "ref": "python scripts/validate_otar_s0_protocol.py --post-freeze"
+        },
+        {
+          "kind": "command",
+          "ref": "pytest tests/test_otar_protocol_schemas.py tests/test_otar_run_config_contract.py"
         }
       ],
       "read_before_edit": [
@@ -273,12 +415,22 @@
         {
           "kind": "file",
           "ref": "configs/baselines.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "scripts/validate_otar_s0_protocol.py"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_s0_schemas/schema_freeze.yaml"
         }
       ],
       "routing_confidence": "medium",
       "expand_search_when": [
         "changing default config keys",
-        "touching experiment names consumed by CLI or registry"
+        "touching experiment names consumed by CLI or registry",
+        "changing asset universe yaml or paper protocol universe selection",
+        "changing OTAR managed configs, schema freeze fields, or HPO no-test-peeking guards"
       ],
       "scope_notes": [
         "no parent-level config may be assumed"
@@ -289,7 +441,13 @@
         "evidence": [
           "configs/paper",
           "src/config.py",
-          "tests/test_config.py"
+          "tests/test_config.py",
+          "configs/data",
+          "scripts/validate_otar_s0_protocol.py",
+          "configs/paper/otar_formal_matrix.yaml",
+          "configs/paper/otar_s0_schemas/schema_freeze.yaml",
+          "tests/test_otar_protocol_schemas.py",
+          "tests/test_otar_run_config_contract.py"
         ],
         "unsampled_paths": []
       }
@@ -438,7 +596,157 @@
           "docs/pitfalls.json",
           "docs/ai_routing_evolution_policy.json",
           "tests/test_scope_guard.py",
-          "AGENTS.md"
+          "AGENTS.md",
+          "validate_ai_routing.py --project-root .",
+          "evolve_ai_routing.py --routing-only"
+        ],
+        "unsampled_paths": []
+      }
+    },
+    {
+      "id": "test_suite_surface",
+      "name": "test-suite-surface",
+      "path": {
+        "kind": "dir",
+        "ref": "tests"
+      },
+      "kind": "module_family",
+      "purpose": [
+        "pytest regression surface",
+        "test discovery and route coverage for changed tests"
+      ],
+      "task_keywords": [
+        "test",
+        "pytest",
+        "regression",
+        "fixture",
+        "conftest",
+        "test_"
+      ],
+      "entry_files": [
+        {
+          "kind": "file",
+          "ref": "tests/conftest.py"
+        }
+      ],
+      "key_symbols": [
+        "pytest"
+      ],
+      "first_read_files": [
+        {
+          "kind": "file",
+          "ref": "tests/conftest.py"
+        }
+      ],
+      "then_check_files": [
+        {
+          "kind": "dir",
+          "ref": "tests"
+        }
+      ],
+      "upstream_dependencies": [
+        {
+          "kind": "module",
+          "ref": "config_surface"
+        },
+        {
+          "kind": "module",
+          "ref": "data_pipeline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "env_runtime_family"
+        },
+        {
+          "kind": "module",
+          "ref": "model_partial_rebalance_family"
+        },
+        {
+          "kind": "module",
+          "ref": "agent_training_family"
+        },
+        {
+          "kind": "module",
+          "ref": "buffer_runtime_family"
+        },
+        {
+          "kind": "module",
+          "ref": "baseline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "experiment_pipeline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "ops_scripts_family"
+        }
+      ],
+      "downstream_dependencies": [],
+      "out_of_scope_dependencies": [
+        {
+          "kind": "package",
+          "ref": "pytest"
+        }
+      ],
+      "related_tests": [
+        {
+          "kind": "dir",
+          "ref": "tests"
+        },
+        {
+          "kind": "dir",
+          "ref": "tests/"
+        }
+      ],
+      "related_configs": [
+        {
+          "kind": "file",
+          "ref": "pyproject.toml"
+        }
+      ],
+      "risk_flags": [
+        "test_discovery_contract",
+        "fixture_schema_contract"
+      ],
+      "edit_risk": "medium",
+      "blast_radius": [
+        "regression selection",
+        "fixture availability"
+      ],
+      "pitfall_ids": [],
+      "minimum_regression": [
+        {
+          "kind": "command",
+          "ref": "pytest tests/test_scope_guard.py"
+        }
+      ],
+      "read_before_edit": [
+        {
+          "kind": "file",
+          "ref": "tests/conftest.py"
+        },
+        {
+          "kind": "file",
+          "ref": "pyproject.toml"
+        }
+      ],
+      "routing_confidence": "medium",
+      "expand_search_when": [
+        "adding tests for a new source module not covered by related_tests",
+        "changing shared fixtures or pytest configuration"
+      ],
+      "scope_notes": [
+        "test files route back to owning source modules when a specific module route exists"
+      ],
+      "notes": [],
+      "grounding": {
+        "fact_status": "mixed",
+        "evidence": [
+          "tests/conftest.py",
+          "pyproject.toml",
+          "tests/test_buffers.py",
+          "tests/"
         ],
         "unsampled_paths": []
       }
@@ -455,7 +763,8 @@
         "dataset loading",
         "feature matrix construction",
         "market image materialization",
-        "leakage guard rails"
+        "leakage guard rails",
+        "split construction with purge, embargo, walk-forward, and last-decision-date metadata"
       ],
       "task_keywords": [
         "feature",
@@ -465,7 +774,12 @@
         "preprocess",
         "leakage",
         "auxiliary target",
-        "dataset"
+        "dataset",
+        "purge",
+        "embargo",
+        "walk_forward",
+        "last decision date",
+        "data split"
       ],
       "entry_files": [
         {
@@ -479,18 +793,29 @@
         {
           "kind": "file",
           "ref": "src/data/leakage_checks.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/data/splits.py"
         }
       ],
       "key_symbols": [
         "FeatureMatrix",
         "MarketImageDataset",
         "FeatureMatrixBuilder",
-        "FEATURE_PROVENANCE_COLUMNS"
+        "FEATURE_PROVENANCE_COLUMNS",
+        "SplitSpec",
+        "create_split",
+        "write_data_split_json"
       ],
       "first_read_files": [
         {
           "kind": "file",
           "ref": "src/data/feature_matrix.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/data/splits.py"
         }
       ],
       "then_check_files": [
@@ -573,6 +898,10 @@
         {
           "kind": "file",
           "ref": "tests/test_deterministic.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_splits.py"
         }
       ],
       "related_configs": [
@@ -592,7 +921,8 @@
       "risk_flags": [
         "lookahead_leakage",
         "schema_contract",
-        "empty_split_failure"
+        "empty_split_failure",
+        "split_boundary_and_last_decision_date_contract"
       ],
       "edit_risk": "high",
       "blast_radius": [
@@ -607,6 +937,10 @@
         {
           "kind": "command",
           "ref": "pytest tests/test_data_loader.py tests/test_auxiliary_targets.py tests/test_deterministic.py"
+        },
+        {
+          "kind": "command",
+          "ref": "pytest tests/test_data_loader.py tests/test_auxiliary_targets.py tests/test_deterministic.py tests/test_splits.py"
         }
       ],
       "read_before_edit": [
@@ -626,7 +960,8 @@
       "routing_confidence": "high",
       "expand_search_when": [
         "changing feature group membership",
-        "changing date filtering or availability mask semantics"
+        "changing date filtering or availability mask semantics",
+        "changing purge, embargo, walk-forward, or strict_no_lookahead split semantics"
       ],
       "scope_notes": [
         "dataset inputs or services outside this subtree are out_of_scope"
@@ -639,7 +974,9 @@
           "src/data/loader.py",
           "src/data/leakage_checks.py",
           "tests/test_data_loader.py",
-          "tests/test_feature_matrix.py"
+          "tests/test_feature_matrix.py",
+          "src/data/splits.py",
+          "tests/test_splits.py"
         ],
         "unsampled_paths": []
       }
@@ -656,7 +993,8 @@
         "gym environment runtime",
         "backtest execution",
         "rebalance scheduling",
-        "cost and reward accounting"
+        "cost and reward accounting",
+        "OTAR risk-state observation and daily diagnostic accounting"
       ],
       "task_keywords": [
         "env",
@@ -666,7 +1004,12 @@
         "reward",
         "cost",
         "constraint",
-        "rebalance"
+        "rebalance",
+        "risk_state",
+        "RiskStateManager",
+        "soft_cvar",
+        "pre_trade_drifted_weights",
+        "daily diagnostics"
       ],
       "entry_files": [
         {
@@ -676,6 +1019,10 @@
         {
           "kind": "file",
           "ref": "src/envs/backtest_engine.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/risk_state_manager.py"
         }
       ],
       "key_symbols": [
@@ -683,7 +1030,8 @@
         "BacktestEngine",
         "PendingActionQueue",
         "BacktestResult",
-        "PENDING_TRUNCATION_REASON"
+        "PENDING_TRUNCATION_REASON",
+        "RiskStateManager"
       ],
       "first_read_files": [
         {
@@ -719,6 +1067,10 @@
         {
           "kind": "file",
           "ref": "src/envs/state.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/risk_state_manager.py"
         }
       ],
       "upstream_dependencies": [
@@ -779,6 +1131,18 @@
         {
           "kind": "file",
           "ref": "tests/test_cost_model.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_risk_state_visibility.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_reward_accounting.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_weight_drift_cost.py"
         }
       ],
       "related_configs": [
@@ -793,12 +1157,18 @@
         {
           "kind": "file",
           "ref": "configs/experiments/transaction_cost_sensitivity.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_s0_schemas/schema_freeze.yaml"
         }
       ],
       "risk_flags": [
         "action_schema_contract",
         "delayed_execution_branch",
-        "artifact_output_schema"
+        "artifact_output_schema",
+        "risk_state_observation_dim_contract",
+        "pre_trade_weight_drift_cost_accounting_contract"
       ],
       "edit_risk": "high",
       "blast_radius": [
@@ -812,12 +1182,17 @@
         "P02",
         "P03",
         "P04",
-        "P07"
+        "P07",
+        "P11"
       ],
       "minimum_regression": [
         {
           "kind": "command",
           "ref": "pytest tests/test_env.py tests/test_backtest_engine.py tests/test_execution_core.py tests/test_constraint_manager.py tests/test_cost_model.py"
+        },
+        {
+          "kind": "command",
+          "ref": "pytest tests/test_env.py tests/test_backtest_engine.py tests/test_execution_core.py tests/test_otar_risk_state_visibility.py tests/test_otar_reward_accounting.py tests/test_otar_weight_drift_cost.py"
         }
       ],
       "read_before_edit": [
@@ -836,12 +1211,17 @@
         {
           "kind": "file",
           "ref": "src/envs/portfolio_execution_core.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/risk_state_manager.py"
         }
       ],
       "routing_confidence": "high",
       "expand_search_when": [
         "changing decision_date versus execution_date semantics",
-        "changing daily artifact columns or pending action handling"
+        "changing daily artifact columns or pending action handling",
+        "changing risk_state observation fields or OTAR daily diagnostics"
       ],
       "scope_notes": [
         "callers outside visible subtree are out_of_scope"
@@ -852,7 +1232,11 @@
         "evidence": [
           "src/envs",
           "tests/test_outputs.py",
-          "tests/test_turnover_activity_gate.py"
+          "tests/test_turnover_activity_gate.py",
+          "src/envs/risk_state_manager.py",
+          "tests/test_otar_risk_state_visibility.py",
+          "tests/test_otar_reward_accounting.py",
+          "tests/test_otar_weight_drift_cost.py"
         ],
         "unsampled_paths": []
       }
@@ -1028,6 +1412,188 @@
       }
     },
     {
+      "id": "buffer_runtime_family",
+      "name": "buffer-runtime-family",
+      "path": {
+        "kind": "dir",
+        "ref": "src/buffers"
+      },
+      "kind": "module_family",
+      "purpose": [
+        "replay and rollout buffer runtime",
+        "n-step transition assembly",
+        "prioritized replay sampling",
+        "checkpoint replay-buffer payload surface"
+      ],
+      "task_keywords": [
+        "buffer",
+        "replay buffer",
+        "rollout buffer",
+        "ReplayItem",
+        "ReplayBuffer",
+        "PrioritizedReplayBuffer",
+        "n-step",
+        "PER",
+        "CQR replay",
+        "q_gap",
+        "pre_trade_drifted_weights"
+      ],
+      "entry_files": [
+        {
+          "kind": "file",
+          "ref": "src/buffers/replay_buffer.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/buffers/prioritized_replay_buffer.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/buffers/rollout_buffer.py"
+        }
+      ],
+      "key_symbols": [
+        "ReplayItem",
+        "ReplayBuffer",
+        "PrioritizedReplayBuffer",
+        "RolloutItem",
+        "RolloutBuffer",
+        "validate_cqr_fields"
+      ],
+      "first_read_files": [
+        {
+          "kind": "file",
+          "ref": "src/buffers/replay_buffer.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/buffers/prioritized_replay_buffer.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/buffers/rollout_buffer.py"
+        }
+      ],
+      "then_check_files": [
+        {
+          "kind": "file",
+          "ref": "src/utils/checkpoint.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/agents/dqn_agent.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_buffers.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_checkpoint.py"
+        }
+      ],
+      "upstream_dependencies": [
+        {
+          "kind": "module",
+          "ref": "env_runtime_family"
+        }
+      ],
+      "downstream_dependencies": [
+        {
+          "kind": "module",
+          "ref": "agent_training_family"
+        },
+        {
+          "kind": "module",
+          "ref": "baseline_family"
+        }
+      ],
+      "out_of_scope_dependencies": [
+        {
+          "kind": "package",
+          "ref": "numpy"
+        },
+        {
+          "kind": "package",
+          "ref": "pandas"
+        },
+        {
+          "kind": "package",
+          "ref": "torch"
+        }
+      ],
+      "related_tests": [
+        {
+          "kind": "file",
+          "ref": "tests/test_buffers.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_checkpoint.py"
+        }
+      ],
+      "related_configs": [],
+      "risk_flags": [
+        "replay_item_schema_contract",
+        "n_step_boundary_contract",
+        "prioritized_sampling_contract",
+        "checkpoint_replay_payload_contract",
+        "cqr_gate_replay_consistency_contract"
+      ],
+      "edit_risk": "high",
+      "blast_radius": [
+        "agent training batches",
+        "checkpoint resume",
+        "prioritized sampling weights",
+        "CQR gate replay diagnostics"
+      ],
+      "pitfall_ids": [
+        "P09"
+      ],
+      "minimum_regression": [
+        {
+          "kind": "command",
+          "ref": "pytest tests/test_buffers.py tests/test_checkpoint.py"
+        }
+      ],
+      "read_before_edit": [
+        {
+          "kind": "file",
+          "ref": "src/buffers/replay_buffer.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/buffers/prioritized_replay_buffer.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/utils/checkpoint.py"
+        }
+      ],
+      "routing_confidence": "medium",
+      "expand_search_when": [
+        "changing ReplayItem fields or as_batch payload keys",
+        "changing n-step flush or split-boundary behavior",
+        "changing checkpoint replay-buffer serialization"
+      ],
+      "scope_notes": [
+        "external checkpoint consumers are out_of_scope"
+      ],
+      "notes": [],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "src/buffers/replay_buffer.py",
+          "src/buffers/prioritized_replay_buffer.py",
+          "src/utils/checkpoint.py",
+          "tests/test_buffers.py",
+          "tests/test_checkpoint.py",
+          "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/test_buffers.py tests/test_checkpoint.py"
+        ],
+        "unsampled_paths": []
+      }
+    },
+    {
       "id": "agent_training_family",
       "name": "agent-training-family",
       "path": {
@@ -1105,6 +1671,10 @@
         {
           "kind": "file",
           "ref": "src/agents/_specialized_agent.py"
+        },
+        {
+          "kind": "dir",
+          "ref": "src/buffers"
         }
       ],
       "upstream_dependencies": [
@@ -1123,6 +1693,10 @@
         {
           "kind": "module",
           "ref": "model_partial_rebalance_family"
+        },
+        {
+          "kind": "module",
+          "ref": "buffer_runtime_family"
         }
       ],
       "downstream_dependencies": [
@@ -1153,6 +1727,10 @@
         {
           "kind": "file",
           "ref": "tests/test_deterministic.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_buffers.py"
         }
       ],
       "related_configs": [
@@ -1180,7 +1758,8 @@
       "pitfall_ids": [
         "P02",
         "P06",
-        "P07"
+        "P07",
+        "P09"
       ],
       "minimum_regression": [
         {
@@ -1205,7 +1784,8 @@
       "routing_confidence": "medium",
       "expand_search_when": [
         "changing trainer hooks or agent factory names",
-        "changing checkpoint payload fields"
+        "changing checkpoint payload fields",
+        "changing replay or rollout buffer payloads consumed by agents"
       ],
       "scope_notes": [
         "agent family routed from visible filenames; implementation facts need code confirmation"
@@ -1234,7 +1814,9 @@
       "purpose": [
         "traditional strategy baselines",
         "native RL baselines",
-        "baseline output evaluation"
+        "baseline output evaluation",
+        "CAGE and GT-RCPO activity gate execution",
+        "OTAR CQR gate native strategy and cost-aware candidate/hold execution"
       ],
       "task_keywords": [
         "baseline",
@@ -1249,10 +1831,20 @@
         "raw_gate_requested_rebalance",
         "final action",
         "turnover threshold",
+        "activity turnover floor",
+        "execution_activity",
+        "cage_common",
+        "cage_eiie",
         "dqn_only",
         "bernoulli_gated_ppo",
         "native_dqn_template",
-        "gt_rcpo_lite"
+        "gt_rcpo_lite",
+        "risk_aware_gt_rcpo",
+        "otar_cqr_gate",
+        "CQR gate",
+        "candidate_weights_json",
+        "executed_gate_action",
+        "pred_delta_utility"
       ],
       "entry_files": [
         {
@@ -1266,13 +1858,29 @@
         {
           "kind": "file",
           "ref": "src/baselines/risk_evaluation.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/cage_common.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/risk_aware_gt_rcpo.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/otar_cqr_gate_strategy.py"
         }
       ],
       "key_symbols": [
         "BaseStrategy",
         "TraditionalStrategyBase",
         "_continuous_weight_rebalance_decision",
-        "_binary_gate_rebalance_decision"
+        "_binary_gate_rebalance_decision",
+        "enforce_activity_turnover_floor",
+        "activity_turnover_floor_per_rebalance",
+        "OTarCQRGateStrategy",
+        "estimate_candidate_cost"
       ],
       "first_read_files": [
         {
@@ -1315,11 +1923,19 @@
         },
         {
           "kind": "file",
+          "ref": "src/baselines/cage_eiie.py"
+        },
+        {
+          "kind": "file",
           "ref": "src/baselines/markowitz.py"
         },
         {
           "kind": "file",
           "ref": "src/baselines/risk_evaluation.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/otar_cqr_gate_strategy.py"
         }
       ],
       "upstream_dependencies": [
@@ -1360,6 +1976,26 @@
         {
           "kind": "file",
           "ref": "tests/test_p12_p13_new_models.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_cage_gate_scoring.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_p16_ra_gt_rcpo.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_cqr_gate_contract.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_actor_gate_masks.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_actor_distribution_guard.py"
         }
       ],
       "related_configs": [
@@ -1370,6 +2006,14 @@
         {
           "kind": "file",
           "ref": "configs/experiments/baseline_comparison.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_cqr_hpo_grid.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_actor_policy_hpo_grid.yaml"
         }
       ],
       "risk_flags": [
@@ -1377,7 +2021,10 @@
         "output_schema_coupling",
         "raw_final_rebalance_gate_semantics",
         "template_action_gate_semantics",
-        "initial_hold_build_semantics"
+        "initial_hold_build_semantics",
+        "activity_turnover_floor_contract",
+        "learned_rho_activity_fallback",
+        "otar_cqr_gate_candidate_hold_contract"
       ],
       "edit_risk": "medium",
       "blast_radius": [
@@ -1388,12 +2035,18 @@
       "pitfall_ids": [
         "P02",
         "P04",
-        "P07"
+        "P07",
+        "P08",
+        "P11"
       ],
       "minimum_regression": [
         {
           "kind": "command",
-          "ref": "pytest tests/test_baselines.py tests/test_baseline_output_schema.py"
+          "ref": "pytest tests/test_baselines.py tests/test_baseline_output_schema.py tests/test_cage_gate_scoring.py tests/test_p16_ra_gt_rcpo.py"
+        },
+        {
+          "kind": "command",
+          "ref": "pytest tests/test_baselines.py tests/test_baseline_output_schema.py tests/test_otar_cqr_gate_contract.py tests/test_otar_actor_gate_masks.py tests/test_otar_actor_distribution_guard.py"
         }
       ],
       "read_before_edit": [
@@ -1407,13 +2060,27 @@
         },
         {
           "kind": "file",
+          "ref": "src/baselines/cage_common.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/risk_aware_gt_rcpo.py"
+        },
+        {
+          "kind": "file",
           "ref": "tests/test_baseline_output_schema.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/otar_cqr_gate_strategy.py"
         }
       ],
       "routing_confidence": "medium",
       "expand_search_when": [
         "editing baseline registry names",
-        "changing baseline output columns or risk metrics"
+        "changing baseline output columns or risk metrics",
+        "changing activity turnover floor or learned rho fallback semantics",
+        "changing OTAR CQR candidate, hold, gate, or cost-estimation diagnostics"
       ],
       "scope_notes": [
         "family routed from representative files; inspect concrete baseline before edit"
@@ -1426,13 +2093,20 @@
           "src/baselines/eiie.py",
           "src/baselines/bernoulli_gated_ppo.py",
           "src/baselines/dqn_only.py",
+          "src/baselines/cage_common.py",
+          "src/baselines/cage_eiie.py",
           "src/baselines/gt_rcpo_lite.py",
+          "src/baselines/risk_aware_gt_rcpo.py",
           "src/baselines/native_bernoulli_gated_ppo.py",
           "src/baselines/native_dqn_template.py",
           "tests/test_baselines.py",
           "tests/test_cage_gate_scoring.py",
           "tests/test_p12_p13_new_models.py",
-          "tests/test_p16_ra_gt_rcpo.py"
+          "tests/test_p16_ra_gt_rcpo.py",
+          "src/baselines/otar_cqr_gate_strategy.py",
+          "tests/test_otar_cqr_gate_contract.py",
+          "tests/test_otar_actor_gate_masks.py",
+          "tests/test_otar_actor_distribution_guard.py"
         ],
         "unsampled_paths": []
       }
@@ -1448,7 +2122,9 @@
       "purpose": [
         "experiment entrypoints",
         "trainer and pipeline orchestration",
-        "registry and aggregation"
+        "registry and aggregation",
+        "HPO activity gate and final report selection",
+        "OTAR V2 full formal pipeline and tail calibration orchestration"
       ],
       "task_keywords": [
         "experiment",
@@ -1458,7 +2134,17 @@
         "trainer",
         "aggregate",
         "cli",
-        "pipeline"
+        "pipeline",
+        "hpo",
+        "activity gate",
+        "promotion gate",
+        "final_activity_failure_reason",
+        "OTAR",
+        "otar_v2_full",
+        "formal matrix",
+        "tail calibration",
+        "protocol_id",
+        "paper aggregate"
       ],
       "entry_files": [
         {
@@ -1476,10 +2162,23 @@
         {
           "kind": "file",
           "ref": "src/experiments/registry.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/otar_v2_full.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/tail_calibration.py"
         }
       ],
       "key_symbols": [
-        "unknown"
+        "_run_hpo_single",
+        "_run_hpo_final_reports",
+        "_hpo_payload_activity_selectable",
+        "run_otar_v2_full_pipeline",
+        "TailCalibrator",
+        "expand_otar_formal_matrix"
       ],
       "first_read_files": [
         {
@@ -1493,6 +2192,10 @@
         {
           "kind": "file",
           "ref": "src/experiments/registry.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/otar_v2_full.py"
         }
       ],
       "then_check_files": [
@@ -1511,6 +2214,14 @@
         {
           "kind": "file",
           "ref": "src/experiments/external_baselines.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/tail_calibration.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/paper_aggregate.py"
         }
       ],
       "upstream_dependencies": [
@@ -1553,6 +2264,30 @@
         {
           "kind": "file",
           "ref": "tests/test_config.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_hpo_activity_metric.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_v2_full_entrypoint.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_formal_matrix.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_formal_artifacts.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_tail_calibration.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_metrics_schema.py"
         }
       ],
       "related_configs": [
@@ -1563,12 +2298,24 @@
         {
           "kind": "dir",
           "ref": "configs/experiments"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_formal_matrix.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_small8_pilot.yaml"
         }
       ],
       "risk_flags": [
         "fanout_entrypoint",
         "config_name_coupling",
-        "result_schema_passthrough"
+        "result_schema_passthrough",
+        "hpo_activity_gate_selection_contract",
+        "final_report_retry_contract",
+        "otar_full_pipeline_manifest_contract",
+        "tail_calibration_boundary_contract"
       ],
       "edit_risk": "high",
       "blast_radius": [
@@ -1578,12 +2325,19 @@
       ],
       "pitfall_ids": [
         "P04",
-        "P06"
+        "P06",
+        "P08",
+        "P10",
+        "P11"
       ],
       "minimum_regression": [
         {
           "kind": "command",
-          "ref": "pytest tests/test_experiments.py tests/test_cli_entrypoint.py tests/test_config.py"
+          "ref": "pytest tests/test_experiments.py tests/test_cli_entrypoint.py tests/test_config.py tests/test_hpo_activity_metric.py"
+        },
+        {
+          "kind": "command",
+          "ref": "pytest tests/test_otar_v2_full_entrypoint.py tests/test_otar_formal_matrix.py tests/test_otar_formal_artifacts.py tests/test_otar_tail_calibration.py tests/test_otar_metrics_schema.py"
         }
       ],
       "read_before_edit": [
@@ -1598,18 +2352,28 @@
         {
           "kind": "file",
           "ref": "src/experiments/pipeline.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/otar_v2_full.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/tail_calibration.py"
         }
       ],
       "routing_confidence": "medium",
       "expand_search_when": [
         "changing experiment ids or registry keys",
-        "changing trainer output payload or aggregation columns"
+        "changing trainer output payload or aggregation columns",
+        "changing HPO activity gate or final report selection semantics",
+        "changing OTAR formal-matrix expansion, lineage validation, aggregate gating, or tail calibration labels"
       ],
       "scope_notes": [
         "CLI or scheduler layers outside this subtree are out_of_scope"
       ],
       "notes": [
-        "needs_code_confirmation for key symbols until file content is re-opened"
+        "key symbols confirmed from src/experiments/run_experiment.py diff and tests/test_hpo_activity_metric.py"
       ],
       "grounding": {
         "fact_status": "mixed",
@@ -1621,7 +2385,529 @@
           "tests/test_hpo_activity_metric.py",
           "tests/test_outputs.py",
           "tests/test_p12_p13_promotion_gate.py",
-          "tests/test_paper_aggregate.py"
+          "tests/test_paper_aggregate.py",
+          "src/experiments/otar_v2_full.py",
+          "src/experiments/tail_calibration.py",
+          "tests/test_otar_v2_full_entrypoint.py",
+          "tests/test_otar_formal_matrix.py",
+          "tests/test_otar_tail_calibration.py"
+        ],
+        "unsampled_paths": []
+      }
+    },
+    {
+      "id": "model_otar_cqr_family",
+      "name": "model-otar-cqr-family",
+      "path": {
+        "kind": "file",
+        "ref": "src/models/otar_cqr_gate.py"
+      },
+      "kind": "module_family",
+      "purpose": [
+        "OTAR action-aware CQR gate model",
+        "candidate-versus-hold quantile utility decisioning",
+        "risk-state latent extension and CQR replay training integration"
+      ],
+      "task_keywords": [
+        "OTAR",
+        "otar_cqr_gate",
+        "CQR",
+        "quantile",
+        "lower tail",
+        "gate_margin",
+        "pred_delta_utility",
+        "pre_trade_drifted_weights",
+        "risk_state",
+        "otar",
+        "cqr",
+        "s0"
+      ],
+      "entry_files": [
+        {
+          "kind": "file",
+          "ref": "src/models/otar_cqr_gate.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/otar_cqr_gate_strategy.py"
+        }
+      ],
+      "key_symbols": [
+        "OTarCQRGate",
+        "OTarCQRCritic",
+        "OTarCQRGateStrategy",
+        "estimate_candidate_cost"
+      ],
+      "first_read_files": [
+        {
+          "kind": "file",
+          "ref": "src/models/otar_cqr_gate.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/otar_cqr_gate_strategy.py"
+        }
+      ],
+      "then_check_files": [
+        {
+          "kind": "file",
+          "ref": "src/buffers/replay_buffer.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/risk_state_manager.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/backtest_engine.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/reward_calculator.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/models/cost_estimator.py"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_s0_schemas/schema_freeze.yaml"
+        }
+      ],
+      "upstream_dependencies": [
+        {
+          "kind": "module",
+          "ref": "config_surface"
+        },
+        {
+          "kind": "module",
+          "ref": "env_runtime_family"
+        },
+        {
+          "kind": "module",
+          "ref": "buffer_runtime_family"
+        },
+        {
+          "kind": "module",
+          "ref": "model_partial_rebalance_family"
+        }
+      ],
+      "downstream_dependencies": [
+        {
+          "kind": "module",
+          "ref": "baseline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "experiment_pipeline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "otar_v2_protocol_family"
+        }
+      ],
+      "out_of_scope_dependencies": [
+        {
+          "kind": "package",
+          "ref": "torch"
+        },
+        {
+          "kind": "package",
+          "ref": "numpy"
+        }
+      ],
+      "related_tests": [
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_cqr_gate_contract.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_actor_gate_masks.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_actor_distribution_guard.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_replay_buffer_contract.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_risk_state_visibility.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_reward_accounting.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_weight_drift_cost.py"
+        }
+      ],
+      "related_configs": [
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_cqr_hpo_grid.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_actor_policy_hpo_grid.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_s0_schemas/schema_freeze.yaml"
+        }
+      ],
+      "risk_flags": [
+        "cqr_replay_schema_contract",
+        "risk_state_dim_contract",
+        "candidate_hold_cost_utility_contract",
+        "lower_tail_field_naming_contract"
+      ],
+      "edit_risk": "high",
+      "blast_radius": [
+        "CQR gate actions",
+        "replay training batches",
+        "OTAR daily diagnostics",
+        "tail calibration tables"
+      ],
+      "pitfall_ids": [
+        "P09",
+        "P10",
+        "P11"
+      ],
+      "minimum_regression": [
+        {
+          "kind": "command",
+          "ref": "pytest tests/test_otar_cqr_gate_contract.py tests/test_otar_actor_gate_masks.py tests/test_otar_actor_distribution_guard.py tests/test_otar_replay_buffer_contract.py tests/test_otar_risk_state_visibility.py tests/test_otar_reward_accounting.py tests/test_otar_weight_drift_cost.py"
+        }
+      ],
+      "read_before_edit": [
+        {
+          "kind": "file",
+          "ref": "src/models/otar_cqr_gate.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/baselines/otar_cqr_gate_strategy.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/buffers/replay_buffer.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/envs/risk_state_manager.py"
+        }
+      ],
+      "routing_confidence": "mixed",
+      "expand_search_when": [
+        "changing CQR replay item fields",
+        "changing risk_state shape or model.use_risk_state",
+        "changing candidate/hold utility, tail loss, or cost estimation fields"
+      ],
+      "scope_notes": [
+        "generated OTAR outputs under outputs/ are artifacts, not implementation truth"
+      ],
+      "notes": [],
+      "grounding": {
+        "fact_status": "mixed",
+        "evidence": [
+          "src/models/otar_cqr_gate.py",
+          "src/baselines/otar_cqr_gate_strategy.py",
+          "src/buffers/replay_buffer.py",
+          "src/envs/risk_state_manager.py",
+          "tests/test_otar_cqr_gate_contract.py",
+          "tests/test_otar_replay_buffer_contract.py"
+        ],
+        "unsampled_paths": []
+      }
+    },
+    {
+      "id": "otar_v2_protocol_family",
+      "name": "otar-v2-protocol-family",
+      "path": {
+        "kind": "dir",
+        "ref": "configs/paper"
+      },
+      "kind": "module_family",
+      "purpose": [
+        "OTAR V2 S0 protocol freeze validation",
+        "formal matrix expansion and full-pipeline orchestration",
+        "protocol-gated paper aggregate artifact generation"
+      ],
+      "task_keywords": [
+        "OTAR",
+        "otar_v2",
+        "S0",
+        "protocol freeze",
+        "formal matrix",
+        "schema_freeze",
+        "small8",
+        "core13 robustness",
+        "tail calibration",
+        "otar_v2_full",
+        "otar",
+        "cqr",
+        "s0"
+      ],
+      "entry_files": [
+        {
+          "kind": "file",
+          "ref": "scripts/validate_otar_s0_protocol.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/otar_v2_full.py"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_formal_matrix.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_small8_pilot.yaml"
+        }
+      ],
+      "key_symbols": [
+        "run_otar_v2_full_pipeline",
+        "validate_protocol",
+        "PROTOCOL_ID",
+        "DATA_CUTOFF_DATE",
+        "RUN_CONFIGS",
+        "FORMAL_MATRIX"
+      ],
+      "first_read_files": [
+        {
+          "kind": "file",
+          "ref": "scripts/validate_otar_s0_protocol.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/otar_v2_full.py"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_formal_matrix.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_s0_schemas/schema_freeze.yaml"
+        }
+      ],
+      "then_check_files": [
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_small8_smoke.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_small8_pilot.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_core13_robustness.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_cqr_hpo_grid.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_actor_policy_hpo_grid.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_baseline_contracts.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/data/small8_universe.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/pipeline.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/paper_aggregate.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/tail_calibration.py"
+        }
+      ],
+      "upstream_dependencies": [
+        {
+          "kind": "module",
+          "ref": "config_surface"
+        },
+        {
+          "kind": "module",
+          "ref": "data_pipeline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "env_runtime_family"
+        },
+        {
+          "kind": "module",
+          "ref": "model_otar_cqr_family"
+        },
+        {
+          "kind": "module",
+          "ref": "baseline_family"
+        },
+        {
+          "kind": "module",
+          "ref": "experiment_pipeline_family"
+        }
+      ],
+      "downstream_dependencies": [
+        {
+          "kind": "module",
+          "ref": "ops_scripts_family"
+        }
+      ],
+      "out_of_scope_dependencies": [],
+      "related_tests": [
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_protocol_schemas.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_v2_full_entrypoint.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_formal_matrix.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_formal_artifacts.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_hpo_no_test_peeking.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_metrics_schema.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_run_config_contract.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_tail_calibration.py"
+        }
+      ],
+      "related_configs": [
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_small8_smoke.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_small8_pilot.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_core13_robustness.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_cqr_hpo_grid.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_actor_policy_hpo_grid.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_baseline_contracts.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_formal_matrix.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_s0_schemas/schema_freeze.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/data/small8_universe.yaml"
+        }
+      ],
+      "risk_flags": [
+        "protocol_freeze_hash_drift",
+        "s0_schema_contract",
+        "formal_lineage_plan_hash_contract",
+        "no_test_peeking_selection_contract",
+        "full_pipeline_output_artifact_contract"
+      ],
+      "edit_risk": "high",
+      "blast_radius": [
+        "OTAR formal run selection",
+        "protocol manifests",
+        "paper aggregate tables",
+        "HPO grid eligibility"
+      ],
+      "pitfall_ids": [
+        "P10",
+        "P11"
+      ],
+      "minimum_regression": [
+        {
+          "kind": "command",
+          "ref": "python scripts/validate_otar_s0_protocol.py --post-freeze"
+        },
+        {
+          "kind": "command",
+          "ref": "pytest tests/test_otar_protocol_schemas.py tests/test_otar_v2_full_entrypoint.py tests/test_otar_formal_matrix.py tests/test_otar_formal_artifacts.py tests/test_otar_hpo_no_test_peeking.py tests/test_otar_metrics_schema.py tests/test_otar_run_config_contract.py tests/test_otar_tail_calibration.py"
+        }
+      ],
+      "read_before_edit": [
+        {
+          "kind": "file",
+          "ref": "scripts/validate_otar_s0_protocol.py"
+        },
+        {
+          "kind": "file",
+          "ref": "src/experiments/otar_v2_full.py"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_formal_matrix.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_s0_schemas/schema_freeze.yaml"
+        }
+      ],
+      "routing_confidence": "mixed",
+      "expand_search_when": [
+        "changing PROTOCOL_ID, DATA_CUTOFF_DATE, RUN_CONFIGS, managed OTAR yaml, or formal-matrix expansion",
+        "changing paper aggregate protocol gates or required output tables"
+      ],
+      "scope_notes": [
+        "outputs/ contains generated experiment artifacts; route implementation through source/config/scripts instead"
+      ],
+      "notes": [],
+      "grounding": {
+        "fact_status": "mixed",
+        "evidence": [
+          "scripts/validate_otar_s0_protocol.py",
+          "src/experiments/otar_v2_full.py",
+          "configs/paper/otar_formal_matrix.yaml",
+          "configs/paper/otar_s0_schemas/schema_freeze.yaml",
+          "tests/test_otar_protocol_schemas.py",
+          "tests/test_otar_v2_full_entrypoint.py"
         ],
         "unsampled_paths": []
       }
@@ -1637,7 +2923,9 @@
       "purpose": [
         "dataset rebuild",
         "PGPortfolio import and export",
-        "metrics factory execution"
+        "metrics factory execution",
+        "paper experiment waiter automation",
+        "OTAR V2 protocol validation and run monitoring scripts"
       ],
       "task_keywords": [
         "rebuild data",
@@ -1645,7 +2933,16 @@
         "import results",
         "export dataset",
         "metrics factory",
-        "fetch"
+        "fetch",
+        "paper automation",
+        "p16 final",
+        "promotion gate",
+        "exp40d_p16_final_early",
+        "validate_otar_s0_protocol",
+        "run_otar_v2_full_tmux",
+        "monitor_otar_v2_full",
+        "check_otar_v2_health",
+        "S0 protocol"
       ],
       "entry_files": [
         {
@@ -1663,6 +2960,14 @@
         {
           "kind": "file",
           "ref": "scripts/run_pyfinance_metrics_factory.py"
+        },
+        {
+          "kind": "file",
+          "ref": "scripts/validate_otar_s0_protocol.py"
+        },
+        {
+          "kind": "file",
+          "ref": "scripts/run_otar_v2_full_tmux.sh"
         }
       ],
       "key_symbols": [
@@ -1671,7 +2976,12 @@
         "ensure_dirs",
         "fetch_tencent",
         "write_wide",
-        "write_asset_universe"
+        "write_asset_universe",
+        "p16_promotion_status",
+        "ensure_p16_wrapper",
+        "validate_protocol",
+        "RUN_CONFIGS",
+        "PROTOCOL_ID"
       ],
       "first_read_files": [
         {
@@ -1691,6 +3001,26 @@
         {
           "kind": "file",
           "ref": "scripts/run_pyfinance_metrics_factory.py"
+        },
+        {
+          "kind": "file",
+          "ref": "scripts/exp40d_p16_final_early.sh"
+        },
+        {
+          "kind": "file",
+          "ref": "scripts/validate_otar_s0_protocol.py"
+        },
+        {
+          "kind": "file",
+          "ref": "scripts/check_otar_v2_health.sh"
+        },
+        {
+          "kind": "file",
+          "ref": "scripts/run_otar_v2_full_tmux.sh"
+        },
+        {
+          "kind": "file",
+          "ref": "scripts/monitor_otar_v2_full.py"
         }
       ],
       "upstream_dependencies": [
@@ -1727,18 +3057,38 @@
         {
           "kind": "file",
           "ref": "tests/test_config.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_protocol_schemas.py"
+        },
+        {
+          "kind": "file",
+          "ref": "tests/test_otar_v2_full_entrypoint.py"
         }
       ],
       "related_configs": [
         {
           "kind": "file",
           "ref": "requirements_data_pipeline.txt"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_formal_matrix.yaml"
+        },
+        {
+          "kind": "file",
+          "ref": "configs/paper/otar_s0_schemas/schema_freeze.yaml"
         }
       ],
       "risk_flags": [
         "absolute_root_constant",
         "network_fetch_variability",
-        "destructive_data_overwrite"
+        "destructive_data_overwrite",
+        "promotion_gate_skip_contract",
+        "paper_automation_state_gate",
+        "otar_protocol_freeze_validation_contract",
+        "run_monitor_manifest_contract"
       ],
       "edit_risk": "high",
       "blast_radius": [
@@ -1748,12 +3098,30 @@
         "data/reports"
       ],
       "pitfall_ids": [
-        "P05"
+        "P05",
+        "P08",
+        "P10"
       ],
       "minimum_regression": [
         {
           "kind": "command",
+          "ref": "bash -n scripts/exp40d_p16_final_early.sh"
+        },
+        {
+          "kind": "command",
           "ref": "pytest tests/test_data_loader.py tests/test_config.py"
+        },
+        {
+          "kind": "command",
+          "ref": "python scripts/validate_otar_s0_protocol.py --post-freeze"
+        },
+        {
+          "kind": "command",
+          "ref": "bash -n scripts/check_otar_v2_health.sh scripts/run_otar_v2_full_tmux.sh"
+        },
+        {
+          "kind": "command",
+          "ref": "python -m py_compile scripts/monitor_otar_v2_full.py"
         }
       ],
       "read_before_edit": [
@@ -1764,12 +3132,22 @@
         {
           "kind": "file",
           "ref": "scripts/run_pyfinance_metrics_factory.py"
+        },
+        {
+          "kind": "file",
+          "ref": "scripts/exp40d_p16_final_early.sh"
+        },
+        {
+          "kind": "file",
+          "ref": "scripts/validate_otar_s0_protocol.py"
         }
       ],
       "routing_confidence": "high",
       "expand_search_when": [
         "changing file naming or output directory layout",
-        "changing remote fetch logic or asset universe columns"
+        "changing remote fetch logic or asset universe columns",
+        "changing paper automation gate or promotion status handling",
+        "changing OTAR S0 managed files, protocol_id, manifest output, or tmux monitor behavior"
       ],
       "scope_notes": [
         "remote data service behavior is out_of_scope"
@@ -1778,7 +3156,13 @@
       "grounding": {
         "fact_status": "mixed",
         "evidence": [
-          "scripts/"
+          "scripts/",
+          "scripts/exp40d_p16_final_early.sh",
+          "scripts/validate_otar_s0_protocol.py",
+          "scripts/check_otar_v2_health.sh",
+          "scripts/run_otar_v2_full_tmux.sh",
+          "scripts/monitor_otar_v2_full.py",
+          "tests/test_otar_protocol_schemas.py"
         ],
         "unsampled_paths": []
       }
