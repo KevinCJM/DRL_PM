@@ -213,13 +213,15 @@ status_file="results/background_logs/EXP40C_p14_early.status"
 mkdir -p "$(dirname "$status_file")"
 
 while true; do
-  if is_ready >"$status_file" 2>&1 && p12_formal_ready >/dev/null 2>&1; then
+  if is_ready >"$status_file" 2>&1; then
     status="$(cat "$status_file" || true)"
     if [[ "$status" == "skip:no_p12_or_p13_promotion" ]]; then
       echo "[skip] $(timestamp) no_p12_or_p13_promotion"
       exit 0
     fi
-    break
+    if p12_formal_ready >/dev/null 2>&1; then
+      break
+    fi
   fi
   echo "[wait] $(timestamp) waiting_for_p12_p7_p9_for_p14"
   sleep 300

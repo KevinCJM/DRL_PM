@@ -28,7 +28,8 @@ from src.envs.backtest_engine import (
 )
 from src.envs.portfolio_execution_core import PortfolioExecutionCore
 from src.envs.rebalance_scheduler import RebalanceScheduler
-from src.envs.reward_calculator import RewardCalculator
+from src.envs.reward_calculator import RewardCalculator, resolve_training_warmup_v_init
+from src.envs.risk_state_manager import RiskStateManager
 from src.envs.state import DecisionMarketState, ExecutionMarketState, ExecutionResult, PortfolioAction, PortfolioState
 
 
@@ -102,6 +103,39 @@ RELATED_WORK_ACTION_INFO_KEYS = (
     "portfolio_level_reward_shared",
     "counterfactual_asset_reward",
     "platform_adapted_approximation",
+    # CQR decision-time (17)
+    "raw_gate_action",
+    "executed_gate_action",
+    "predicted_5pct_quantile_executed",
+    "predicted_5pct_quantile_candidate",
+    "predicted_5pct_quantile_hold",
+    "pred_delta_utility",
+    "pred_candidate_utility",
+    "pred_hold_utility",
+    "pred_candidate_mean_return",
+    "pred_hold_mean_return",
+    "pred_candidate_lower_tail_loss",
+    "pred_hold_lower_tail_loss",
+    "candidate_estimated_cost",
+    "hold_estimated_cost",
+    "gate_margin",
+    "quantile_spread_candidate",
+    "quantile_spread_hold",
+    # Policy diagnostics (5)
+    "log_prob",
+    "entropy",
+    "alpha_min",
+    "alpha_max",
+    "alpha_mean",
+    # Projection diagnostics (2)
+    "projection_distance",
+    "projection_violation_count",
+    # Actor-gate masks (2)
+    "value_update_mask",
+    "gate_update_mask",
+    # Cost/turnover (2)
+    "estimated_turnover",
+    "estimated_cost",
 )
 
 
@@ -137,6 +171,12 @@ class PortfolioRebalanceEnv(gym.Env):
         self.execution_core = execution_core or PortfolioExecutionCore(self.config)
         self.scheduler = scheduler
         self.reward_calculator = reward_calculator or RewardCalculator(self.config)
+        self.v_init_resolved_value = resolve_training_warmup_v_init(
+            self.reward_calculator,
+            self.dataset,
+            self.split,
+            self.config,
+        )
         self.market_image_dataset = market_image_dataset
         self.market_image_feature_cols = _feature_names(market_image_dataset, fallback=dataset.feature_cols)
         assert_decision_visibility_contract(
@@ -193,6 +233,17 @@ class PortfolioRebalanceEnv(gym.Env):
                 "portfolio_value": spaces.Box(low=0.0, high=np.inf, shape=(), dtype=self.observation_dtype),
             }
         )
+        self._use_risk_state = bool(self.config.get("model", {}).get("use_risk_state", False))
+        if self._use_risk_state:
+            self.observation_space["risk_state"] = spaces.Box(
+                low=-np.inf,
+                high=np.inf,
+                shape=(8,),
+                dtype=self.observation_dtype,
+            )
+            self.risk_state_manager = RiskStateManager(self.config)
+        else:
+            self.risk_state_manager = None
         self.action_space = spaces.Dict(
             {
                 "weights": spaces.Box(low=0.0, high=1.0, shape=(n_assets,), dtype=np.float32),
@@ -222,6 +273,8 @@ class PortfolioRebalanceEnv(gym.Env):
         self._scheduler_runtime = self.scheduler or RebalanceScheduler(self.config, date_index=self.date_index)
         self._scheduler_runtime.reset()
         self.reward_calculator.reset_episode()
+        if self.risk_state_manager is not None:
+            self.risk_state_manager.reset()
         self.portfolio_state = _initial_portfolio_state(
             self.asset_ids,
             self.decision_dates[0],
@@ -258,12 +311,19 @@ class PortfolioRebalanceEnv(gym.Env):
     ) -> tuple[dict[str, np.ndarray], float, bool, bool, dict[str, Any]]:
         execution_state = self.execution_core.build_execution_market_state(self.dataset, decision_date)
         execution_result = self._execute_step(action, execution_state, final_action)
+        if self.risk_state_manager is not None:
+            self.risk_state_manager.update_pre_reward(execution_result, self._state, final_action)
+        reward_context = self._reward_context()
+        if self.risk_state_manager is not None:
+            reward_context["drawdown_increment_t"] = self.risk_state_manager.drawdown_increment
         reward, reward_info = self.reward_calculator.calculate(
             execution_result,
             self._state,
             omega=self._preference_omega(),
-            reward_context=self._reward_context(),
+            reward_context=reward_context,
         )
+        if self.risk_state_manager is not None:
+            self.risk_state_manager.update_reward_info(reward_info)
         self._first_trade = False
         self._advance_position()
         truncated = self._step_pos >= len(self.decision_dates)
@@ -293,12 +353,19 @@ class PortfolioRebalanceEnv(gym.Env):
                 pending_action=ready_action,
             )
             execution_result = self._execute_step(delayed_action, execution_state, ready_action.rebalance_action)
+            if self.risk_state_manager is not None:
+                self.risk_state_manager.update_pre_reward(execution_result, self._state, ready_action.rebalance_action)
+            reward_context = self._reward_context()
+            if self.risk_state_manager is not None:
+                reward_context["drawdown_increment_t"] = self.risk_state_manager.drawdown_increment
             reward, reward_info = self.reward_calculator.calculate(
                 execution_result,
                 self._state,
                 omega=self._preference_omega(),
-                reward_context=self._reward_context(),
+                reward_context=reward_context,
             )
+            if self.risk_state_manager is not None:
+                self.risk_state_manager.update_reward_info(reward_info)
             self._first_trade = False
             execution_payload = (delayed_action, ready_action, execution_state, execution_result, float(reward), reward_info)
 
@@ -459,6 +526,8 @@ class PortfolioRebalanceEnv(gym.Env):
             ),
             "portfolio_value": np.asarray(self._state.portfolio_value, dtype=self.observation_dtype),
         }
+        if self.risk_state_manager is not None:
+            observation["risk_state"] = self.risk_state_manager.get_observation_vector().astype(self.observation_dtype)
         omega = self._preference_omega()
         if omega is not None:
             observation["preference_omega"] = np.asarray(omega, dtype=self.observation_dtype)

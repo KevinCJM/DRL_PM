@@ -167,8 +167,14 @@ def test_defaults_are_filled(tmp_path):
 
 
 def test_paper_configs_use_disk_bounded_checkpoints():
+    non_run_configs = {
+        "otar_cqr_hpo_grid.yaml",
+        "otar_actor_policy_hpo_grid.yaml",
+    }
     for path in (PROJECT_ROOT / "configs" / "paper").glob("*.yaml"):
         if path.name.startswith("._"):
+            continue
+        if path.name in non_run_configs:
             continue
         config = ConfigLoader.load(path)
         assert config["training"]["checkpoint_include_replay_buffer"] is False, path.name

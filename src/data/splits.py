@@ -83,6 +83,9 @@ def _create_fixed_split(
     force_purge: bool = False,
     force_embargo: bool = False,
 ) -> SplitSpec:
+    date_spec = _date_boundary_split(dates, split_config)
+    if date_spec is not None:
+        return _finalize_split(date_spec, split_config, config, force_purge=force_purge, force_embargo=force_embargo)
     train_ratio = float(split_config.get("train_ratio", 0.70))
     validation_ratio = float(split_config.get("validation_ratio", 0.15))
     train_end = int(len(dates) * train_ratio)
@@ -94,6 +97,65 @@ def _create_fixed_split(
         fold_id="fixed",
     )
     return _finalize_split(spec, split_config, config, force_purge=force_purge, force_embargo=force_embargo)
+
+
+def _date_boundary_split(dates: pd.DatetimeIndex, split_config: Mapping[str, Any]) -> SplitSpec | None:
+    keys = (
+        "train_start",
+        "train_end",
+        "validation_start",
+        "validation_end",
+        "test_start",
+        "test_end",
+    )
+    if not any(split_config.get(key) not in (None, "") for key in keys):
+        return None
+
+    train_dates = _dates_between(
+        dates,
+        _optional_boundary(split_config.get("train_start"), allow_earliest=True),
+        _optional_boundary(split_config.get("train_end")),
+    )
+    validation_dates = _dates_between(
+        dates,
+        _optional_boundary(split_config.get("validation_start")),
+        _optional_boundary(split_config.get("validation_end")),
+    )
+    test_dates = _dates_between(
+        dates,
+        _optional_boundary(split_config.get("test_start")),
+        _optional_boundary(split_config.get("test_end")),
+    )
+    return SplitSpec(
+        train_dates=train_dates,
+        validation_dates=validation_dates,
+        test_dates=test_dates,
+        fold_id="fixed_dates",
+    )
+
+
+def _dates_between(
+    dates: pd.DatetimeIndex,
+    start: pd.Timestamp | None,
+    end: pd.Timestamp | None,
+) -> pd.DatetimeIndex:
+    mask = pd.Series(True, index=dates)
+    if start is not None:
+        mask &= dates >= start
+    if end is not None:
+        mask &= dates <= end
+    return pd.DatetimeIndex(dates[mask.to_numpy(dtype=bool)])
+
+
+def _optional_boundary(value: Any, *, allow_earliest: bool = False) -> pd.Timestamp | None:
+    if value is None or value == "":
+        return None
+    if allow_earliest and str(value).lower() == "earliest":
+        return None
+    timestamp = pd.to_datetime(value, errors="coerce")
+    if pd.isna(timestamp):
+        raise DataContractError("ERR_SPLIT_EMPTY", f"ERR_SPLIT_EMPTY: split boundary={value!r}")
+    return pd.Timestamp(timestamp)
 
 
 def _create_walk_forward_splits(

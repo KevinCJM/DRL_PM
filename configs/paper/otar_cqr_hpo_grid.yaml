@@ -1,0 +1,37 @@
+protocol_id: otar_v2_s0_20260605
+grid_name: otar_cqr_hpo_grid
+selection_scope: validation_only
+no_test_peeking: true
+candidate_values:
+  gate_gamma: [0.95, 0.99]
+  n_quantiles: [31, 51]
+  quantile_huber_kappa: [0.5, 1.0]
+  gate_margin: [0.0, 0.0005, 0.001]
+  gate_lr: [0.0001, 0.0003]
+  target_update_interval: [32, 64]
+  replay_min_size: [256, 512]
+  gate_batch_size: [32, 64]
+  calibration_horizon_H: [20]
+  epsilon_start: [0.20]
+  epsilon_end: [0.02]
+  min_rebalance_ratio_in_buffer: [0.05]
+  min_hold_ratio_in_buffer: [0.20]
+frozen_before_test:
+  - gate_gamma
+  - n_quantiles
+  - quantile_huber_kappa
+  - gate_margin
+  - gate_lr
+  - target_update_interval
+  - replay_min_size
+  - gate_batch_size
+  - calibration_horizon_H
+  - epsilon_start
+  - epsilon_end
+  - min_rebalance_ratio_in_buffer
+  - min_hold_ratio_in_buffer
+forbidden_targets:
+  - net-return distribution
+  - PPO shaped-reward distribution
+  - gate utility distribution
+allowed_target: gross simple-return return-to-go distribution

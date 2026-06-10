@@ -330,6 +330,7 @@ class PortfolioExecutionCore:
             _positive_float("portfolio_state.running_max_nav", portfolio_state.running_max_nav or nav_t),
             nav_next,
         )
+        portfolio_state.prev_drawdown_abs = portfolio_state.current_drawdown_abs
         portfolio_state.current_drawdown_abs = max(0.0, 1.0 - nav_next / portfolio_state.running_max_nav)
         portfolio_state.max_drawdown_abs = max(portfolio_state.max_drawdown_abs, portfolio_state.current_drawdown_abs)
         portfolio_state.rolling_returns.append(net_return)
@@ -344,6 +345,8 @@ class PortfolioExecutionCore:
             self.execution_config,
         )
         info.update(cost_info)
+        info["pre_execution_asset_simple_return"] = r_pre.tolist()
+        info["post_execution_asset_simple_return"] = r_hold.tolist()
 
         return ExecutionResult(
             executed_weights=executed_weights,

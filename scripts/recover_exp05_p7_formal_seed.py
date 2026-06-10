@@ -25,6 +25,7 @@ from src.experiments.run_experiment import (
     _activity_audit_values,
     _activity_hpo_trial_hard_fail_enabled,
     _activity_trial_failure_reason,
+    _apply_hpo_final_activity_status,
     _apply_orchestration_metadata,
     _assert_completed_result,
     _attach_single_model_hpo_final_outputs,
@@ -33,9 +34,11 @@ from src.experiments.run_experiment import (
     _config_path,
     _create_run_dir,
     _hpo_int,
+    _hpo_final_report_best_trial,
     _hpo_model_final_comparison,
     _hpo_model_final_frame,
     _hpo_model_final_reports,
+    _is_hpo_final_activity_failure,
     _hpo_model_summary,
     _hpo_pruner_int,
     _hpo_trainable_models,
@@ -393,9 +396,9 @@ def _resume_or_run_interrupted_model_payload(root_experiment: HPOExperiment, mod
     if not complete_trials:
         raise RuntimeError(f"ERR_P7_RECOVERY_NO_COMPLETED_TRIAL: {model_name}")
 
-    best_trial = _best_trial(complete_trials, direction)
-    _write_best_trial_config_snapshot(model_experiment, best_trial, model_dir)
     final_reports = _run_hpo_final_reports(model_experiment, complete_trials, direction, final_split)
+    best_trial = _hpo_final_report_best_trial(final_reports, complete_trials)
+    _write_best_trial_config_snapshot(model_experiment, best_trial, model_dir)
     final_result = dict(final_reports["best"]["result"])
     if str(final_result.get("status", "unknown")) != "completed":
         raise RuntimeError(f"ERR_HPO_FINAL_RESULT_NOT_COMPLETED: {model_name}")
@@ -422,6 +425,9 @@ def _resume_or_run_interrupted_model_payload(root_experiment: HPOExperiment, mod
                     "trial_number": report.get("trial_number"),
                     "validation_value": report.get("validation_value"),
                     "params": report.get("params", {}),
+                    "selection_activity_failure_reason": report.get("selection_activity_failure_reason", ""),
+                    "activity_failure_reason": report.get("activity_failure_reason", ""),
+                    "final_activity_failure_reason": report.get("final_activity_failure_reason", ""),
                     "result": report.get("result", {}),
                 }
                 for label, report in final_reports.items()
@@ -451,7 +457,9 @@ def _resume_or_run_interrupted_model_payload(root_experiment: HPOExperiment, mod
         best_value=best_trial.value,
         trial_count=len(trial_rows),
         selection_split=validation_split,
+        config=model_config,
     )
+    _apply_hpo_final_activity_status(payload, model_config)
     _refresh_new_model_artifacts(payload, model_config)
     _attach_single_model_hpo_final_outputs(payload)
     return payload
@@ -474,9 +482,9 @@ def _recover_completed_model_payload(root_experiment: HPOExperiment, model_name:
         if "study_name" in trial_frame.columns and not trial_frame["study_name"].dropna().empty
         else str(hpo_cfg.get("study_name") or f"{root_experiment.config['output']['run_name']}_hpo_{_safe_hpo_model_key(model_name)}")
     )
-    best_trial = _best_trial(complete_trials, direction)
-    _write_best_trial_config_snapshot(model_experiment, best_trial, model_dir)
     final_reports = _run_hpo_final_reports(model_experiment, complete_trials, direction, final_split)
+    best_trial = _hpo_final_report_best_trial(final_reports, complete_trials)
+    _write_best_trial_config_snapshot(model_experiment, best_trial, model_dir)
     final_result = dict(final_reports["best"]["result"])
     if str(final_result.get("status", "unknown")) != "completed":
         raise RuntimeError(f"ERR_HPO_FINAL_RESULT_NOT_COMPLETED: {model_name}")
@@ -502,6 +510,9 @@ def _recover_completed_model_payload(root_experiment: HPOExperiment, model_name:
                     "trial_number": report.get("trial_number"),
                     "validation_value": report.get("validation_value"),
                     "params": report.get("params", {}),
+                    "selection_activity_failure_reason": report.get("selection_activity_failure_reason", ""),
+                    "activity_failure_reason": report.get("activity_failure_reason", ""),
+                    "final_activity_failure_reason": report.get("final_activity_failure_reason", ""),
                     "result": report.get("result", {}),
                 }
                 for label, report in final_reports.items()
@@ -521,7 +532,9 @@ def _recover_completed_model_payload(root_experiment: HPOExperiment, model_name:
         best_value=best_trial.value,
         trial_count=len(trial_frame),
         selection_split=validation_split,
+        config=model_config,
     )
+    _apply_hpo_final_activity_status(payload, model_config)
     _refresh_new_model_artifacts(payload, model_config)
     _attach_single_model_hpo_final_outputs(payload)
     return payload
@@ -563,6 +576,8 @@ def _failed_model_payload(
         "rankable_in_unified_table": False,
         "reason": reason,
         "fail_reason": reason,
+        "final_activity_passed": False,
+        "final_activity_failure_reason": reason,
         "recovery_metadata": {
             "mode": recovery_mode,
             "recovered_trial_rows": recovered_trial_count if recovered_trial_count is not None else len(trial_frame),
@@ -650,7 +665,21 @@ def recover_or_run(root_experiment: HPOExperiment, *, dry_run: bool = False) -> 
         }
 
     for model_name in recovered_models:
-        payloads.append(_recover_completed_model_payload(root_experiment, model_name))
+        model_experiment, _model_config, model_dir = _model_experiment(root_experiment, model_name)
+        try:
+            payloads.append(_recover_completed_model_payload(root_experiment, model_name))
+        except RuntimeError as exc:
+            if not _is_hpo_final_activity_failure(exc):
+                raise
+            payloads.append(
+                _failed_model_payload(
+                    root_experiment=root_experiment,
+                    model_name=model_name,
+                    trial_frame=_trial_rows(model_dir / "logs" / "hpo_trials.csv"),
+                    reason=str(exc),
+                    recovery_mode="single_model_recovered_final_activity_failed",
+                )
+            )
 
     for model_name in rerun_models:
         model_experiment, _model_config, model_dir = _model_experiment(root_experiment, model_name)
@@ -659,7 +688,7 @@ def recover_or_run(root_experiment: HPOExperiment, *, dry_run: bool = False) -> 
             try:
                 payload = dict(_resume_or_run_interrupted_model_payload(root_experiment, model_name))
             except RuntimeError as exc:
-                if "ERR_P7_RECOVERY_NO_COMPLETED_TRIAL" not in str(exc):
+                if "ERR_P7_RECOVERY_NO_COMPLETED_TRIAL" not in str(exc) and not _is_hpo_final_activity_failure(exc):
                     raise
                 trial_frame = _trial_rows(model_dir / "logs" / "hpo_trials.csv")
                 reason = next(
@@ -702,7 +731,7 @@ def recover_or_run(root_experiment: HPOExperiment, *, dry_run: bool = False) -> 
             try:
                 payload = dict(_run_hpo_single(model_experiment))
             except RuntimeError as exc:
-                if "ERR_HPO_NO_COMPLETED_TRIAL" not in str(exc):
+                if "ERR_HPO_NO_COMPLETED_TRIAL" not in str(exc) and not _is_hpo_final_activity_failure(exc):
                     raise
                 trial_frame = _trial_rows(model_dir / "logs" / "hpo_trials.csv")
                 reason = next(

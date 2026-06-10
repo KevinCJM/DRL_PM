@@ -1,6 +1,8 @@
 import numpy as np
 
 from src.baselines.cage_common import (
+    enforce_activity_turnover_floor,
+    estimate_turnover,
     choose_rho,
     compute_expected_alpha_horizon,
     score_rho_normalized,
@@ -67,3 +69,62 @@ def test_expected_alpha_horizon_scales_by_activity_protocol():
     )
 
     assert weekly == daily * 5.0
+
+
+def test_activity_turnover_floor_expands_candidate_after_gate_passes():
+    config = {
+        "execution_activity": {
+            "activity_gate_enforced": True,
+            "min_non_initial_turnover_per_opportunity": 0.002,
+            "min_model_rebalance_hit_rate": 0.05,
+        }
+    }
+    current = np.array([0.5, 0.5])
+    candidate = np.array([0.51, 0.49])
+
+    adjusted, info = enforce_activity_turnover_floor(
+        candidate,
+        current,
+        np.array([True, True]),
+        config,
+        rebalance_intensity=1.0,
+        first_trade=False,
+    )
+
+    assert info["activity_turnover_floor_applied"] is True
+    assert estimate_turnover(adjusted, current) >= 0.04 - 1.0e-8
+    np.testing.assert_allclose(adjusted.sum(), 1.0)
+
+
+def test_activity_turnover_floor_does_not_override_hold_or_first_trade():
+    config = {
+        "execution_activity": {
+            "activity_gate_enforced": True,
+            "min_non_initial_turnover_per_opportunity": 0.002,
+            "min_model_rebalance_hit_rate": 0.05,
+        }
+    }
+    current = np.array([0.5, 0.5])
+    candidate = np.array([0.51, 0.49])
+
+    held, hold_info = enforce_activity_turnover_floor(
+        candidate,
+        current,
+        np.array([True, True]),
+        config,
+        rebalance_intensity=0.0,
+        first_trade=False,
+    )
+    first, first_info = enforce_activity_turnover_floor(
+        candidate,
+        current,
+        np.array([True, True]),
+        config,
+        rebalance_intensity=1.0,
+        first_trade=True,
+    )
+
+    np.testing.assert_allclose(held, candidate)
+    np.testing.assert_allclose(first, candidate)
+    assert hold_info["activity_turnover_floor_applied"] is False
+    assert first_info["activity_turnover_floor_applied"] is False

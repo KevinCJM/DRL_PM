@@ -17,6 +17,11 @@ class FullGatedModel(nn.Module):
         self.n_features = _resolve_int(config, "n_features")
         self.window_size = _resolve_int(config, "window_size")
         self.latent_dim = int(config.get("latent_dim", model_config.get("latent_dim", 256)))
+        self.use_risk_state = bool(model_config.get("use_risk_state", False))
+        self.risk_state_dim = int(model_config.get("risk_state_dim", 8))
+        self.effective_latent_dim = (
+            self.latent_dim + self.risk_state_dim if self.use_risk_state else self.latent_dim
+        )
         resolved_config = dict(config)
         resolved_config.update(
             {
@@ -33,16 +38,18 @@ class FullGatedModel(nn.Module):
         # 2. PPO Actor
         ppo_config = _mapping(config.get("ppo") or model_config.get("ppo"))
         ppo_hidden_dims = ppo_config.get("hidden_dims")
+        max_alpha_val = ppo_config.get("max_alpha")
         self.actor = PPOActor(
-            self.latent_dim,
+            self.effective_latent_dim,
             self.n_assets,
             min_alpha=float(ppo_config.get("min_alpha", ppo_config.get("actor_min_alpha", 1.0e-3))),
+            max_alpha=float(max_alpha_val) if max_alpha_val is not None else None,
             hidden_dims=ppo_config.get("actor_hidden_dims", ppo_hidden_dims),
         )
         
         # 3. PPO Critic
         self.critic = PPOCritic(
-            self.latent_dim,
+            self.effective_latent_dim,
             hidden_dims=ppo_config.get("critic_hidden_dims", ppo_hidden_dims),
         )
         
@@ -51,7 +58,7 @@ class FullGatedModel(nn.Module):
         self.dqn_gate_enabled = bool(dqn_config.get("enabled", True))
         self.q_gap_threshold = float(dqn_config.get("q_gap_threshold", 0.0))
         self.gate = DQNGate(
-            latent_dim=self.latent_dim, 
+            latent_dim=self.effective_latent_dim, 
             n_assets=self.n_assets, 
             dueling=dqn_config.get("dueling", True),
             output_dim=int(dqn_config.get("output_dim", 2)),
@@ -64,7 +71,7 @@ class FullGatedModel(nn.Module):
         self.auxiliary_enabled = bool(aux_config.get("enabled", True))
         self.aux_heads = (
             AuxiliaryHeads(
-                latent_dim=self.latent_dim,
+                latent_dim=self.effective_latent_dim,
                 n_assets=self.n_assets,
                 n_features=self.n_features,
                 window_size=self.window_size,
@@ -82,16 +89,22 @@ class FullGatedModel(nn.Module):
                 estimated_cost: torch.Tensor,
                 deterministic: bool = False,
                 candidate_weights_override: torch.Tensor | None = None,
-                rebalance_intensity_override: torch.Tensor | None = None) -> Mapping[str, Any]:
+                rebalance_intensity_override: torch.Tensor | None = None,
+                risk_state: torch.Tensor | None = None) -> Mapping[str, Any]:
         """
         x: [batch, n_features, window_size, n_assets]
         mask: [batch, n_assets]
         current_weights: [batch, n_assets]
         estimated_turnover: [batch, 1]
         estimated_cost: [batch, 1]
+        risk_state: [batch, risk_state_dim] or None
         """
         # 1. Encode state
         latent = self.encoder(x)
+        if self.use_risk_state and risk_state is None:
+            raise ValueError("ERR_OBSERVATION_RISK_STATE_MISSING: use_risk_state=True but risk_state is None")
+        if risk_state is not None:
+            latent = torch.cat([latent, risk_state], dim=-1)
         
         # 2. PPO Candidate Weights
         dist = self.actor.get_distribution(latent, mask)

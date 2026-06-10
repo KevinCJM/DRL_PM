@@ -6,6 +6,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from src.experiments.pipeline import run_otar_formal_matrix
 from src.experiments.registry import ExperimentRegistry
 from src.utils.logger import save_json_atomic, write_run_outputs
 
@@ -52,9 +53,17 @@ def run_experiment_matrix(
         child_run_id = f"{parent_run_id}.{index:02d}_{experiment_type}"
         child_config = _child_config(base_config, experiment_type, child_run_id)
         child_run_dir = None if parent_run_dir is None else parent_run_dir / child_run_id
-        experiment = selected_registry.create_experiment(child_config, device=device, run_dir=child_run_dir)
         cached_result = _completed_child_result(child_run_dir) if resume_completed_children else None
-        result = cached_result if cached_result is not None else _result_mapping(experiment.run())
+        if experiment_type == "otar_formal_matrix":
+            experiment = None
+            output_name = "otar_formal_matrix_summary"
+            result = cached_result if cached_result is not None else _result_mapping(
+                run_otar_formal_matrix(child_config, run_dir=child_run_dir, device=device)
+            )
+        else:
+            experiment = selected_registry.create_experiment(child_config, device=device, run_dir=child_run_dir)
+            output_name = experiment.output_name
+            result = cached_result if cached_result is not None else _result_mapping(experiment.run())
         status = str(result.get("status", "unknown"))
         if status != "completed":
             raise RuntimeError(f"ERR_EXPERIMENT_MATRIX_CHILD_NOT_COMPLETED: {experiment_type}: status={status}")
@@ -68,7 +77,7 @@ def run_experiment_matrix(
                     "status": "success",
                     "parent_run_id": parent_run_id,
                     "experiment_type": experiment_type,
-                    "output_name": experiment.output_name,
+                    "output_name": output_name,
                 },
             )
         lineage.append(
@@ -77,7 +86,7 @@ def run_experiment_matrix(
                 "parent_run_id": parent_run_id,
                 "child_run_id": child_run_id,
                 "experiment_type": experiment_type,
-                "output_name": experiment.output_name,
+                "output_name": output_name,
                 "relation_type": "full_reproduction_child",
                 "status": str(result.get("status", "unknown")),
                 "resumed_from_completed_child": cached_result is not None,

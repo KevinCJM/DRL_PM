@@ -1,0 +1,98 @@
+protocol_id: otar_v2_s0_20260605
+
+ablation_models:
+  A0:
+    model: dqn_gated_multitask_cnn_ppo
+    risk_state: false
+    reward_mode: A2_net_log_return_after_cost
+    cqr_enabled: false
+  A1:
+    model: dqn_gated_multitask_cnn_ppo
+    risk_state: true
+    reward_mode: A2_net_log_return_after_cost
+    cqr_enabled: false
+  A2:
+    model: dqn_gated_multitask_cnn_ppo
+    risk_state: true
+    reward_mode: A8_cvar_sensitive
+    cqr_enabled: false
+  A3:
+    model: dqn_gated_multitask_cnn_ppo
+    risk_state: true
+    reward_mode: A13_otar_soft_ru_cvar_fixed
+    cqr_enabled: false
+  A4_lite:
+    model: otar_cqr_gate
+    risk_state: true
+    reward_mode: A13_otar_soft_ru_cvar_fixed
+    cqr_enabled: true
+    quantile_tail_enabled: false
+  A4:
+    model: otar_cqr_gate
+    risk_state: true
+    reward_mode: A13_otar_soft_ru_cvar_fixed
+    cqr_enabled: true
+    quantile_tail_enabled: true
+
+ablation_field_to_config_path:
+  risk_state: model.use_risk_state
+  reward_mode: reward.mode
+  cqr_enabled: cqr.enabled
+  quantile_tail_enabled: cqr.quantile_tail_enabled
+
+universes:
+  - Small-8
+  - Core-13
+
+seeds:
+  - 42
+  - 123
+  - 2024
+  - 3407
+  - 9999
+
+tier1:
+  cost: 0.001
+  confidence_q: 0.95
+  backbone: CNN
+
+tier2:
+  models:
+    - dqn_gated_multitask_cnn_ppo
+    - otar_fixed
+    - otar_cqr_gate
+  costs:
+    - 0
+    - 0.0005
+    - 0.001
+    - 0.002
+    - 0.005
+  seeds:
+    - 42
+    - 123
+    - 2024
+  universe: Small-8
+
+split:
+  train:
+    start: earliest
+    end: "2021-12-31"
+  validation:
+    start: "2022-01-01"
+    end: "2022-12-31"
+  test:
+    start: "2023-01-01"
+    end: "2026-05-20"
+
+hpo_budget:
+  traditional_baselines: 20
+  ppo_baselines: 30
+  dqn_gated_ppo: 30
+  otar_fixed: 40
+  otar_cqr: 40
+
+selection_metric:
+  primary: validation_cvar95_loss
+  secondary: validation_calmar
+  constraint:
+    validation_cumulative_return_drop: -0.05

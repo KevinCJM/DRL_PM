@@ -48,6 +48,12 @@ class ReplayItem:
     split_boundary_t: bool = False
     n_steps: int = 1
     discount: float = 1.0
+    pre_trade_drifted_weights_t: np.ndarray | None = None
+    pre_trade_drifted_weights_t_plus_1: np.ndarray | None = None
+    estimated_cost_candidate_t: float | None = None
+    estimated_cost_hold_t: float | None = None
+    realized_gross_simple_return_t: float | None = None
+    prev_weights_t: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         self.decision_date_t = _timestamp("decision_date_t", self.decision_date_t)
@@ -115,6 +121,12 @@ class ReplayItem:
         self.next_state_source_t = _non_empty_string("next_state_source_t", self.next_state_source_t)
         self.n_steps = _positive_int("n_steps", self.n_steps)
         self.discount = _non_negative_float("discount", self.discount)
+        if self.pre_trade_drifted_weights_t is not None:
+            self.pre_trade_drifted_weights_t = _weights("pre_trade_drifted_weights_t", self.pre_trade_drifted_weights_t)
+        if self.pre_trade_drifted_weights_t_plus_1 is not None:
+            self.pre_trade_drifted_weights_t_plus_1 = _weights("pre_trade_drifted_weights_t_plus_1", self.pre_trade_drifted_weights_t_plus_1)
+        if self.prev_weights_t is not None:
+            self.prev_weights_t = _weights("prev_weights_t", self.prev_weights_t)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -154,6 +166,12 @@ class ReplayItem:
             "split_boundary_t": self.split_boundary_t,
             "n_steps": self.n_steps,
             "discount": self.discount,
+            "pre_trade_drifted_weights_t": self.pre_trade_drifted_weights_t,
+            "pre_trade_drifted_weights_t_plus_1": self.pre_trade_drifted_weights_t_plus_1,
+            "estimated_cost_candidate_t": self.estimated_cost_candidate_t,
+            "estimated_cost_hold_t": self.estimated_cost_hold_t,
+            "realized_gross_simple_return_t": self.realized_gross_simple_return_t,
+            "prev_weights_t": self.prev_weights_t,
         }
 
 
@@ -214,6 +232,32 @@ class ReplayBuffer:
         indices = generator.choice(len(self._items), size=int(batch_size), replace=bool(replace))
         return tuple(self._items[int(index)] for index in np.asarray(indices).reshape(-1))
 
+    def validate_cqr_fields(self, item: ReplayItem) -> None:
+        if item.pre_trade_drifted_weights_t is None:
+            raise ValueError("ERR_CQR_REPLAY_ITEM_MISSING_FIELD: pre_trade_drifted_weights_t")
+        if item.pre_trade_drifted_weights_t_plus_1 is None:
+            raise ValueError("ERR_CQR_REPLAY_ITEM_MISSING_FIELD: pre_trade_drifted_weights_t_plus_1")
+        if item.estimated_cost_candidate_t is None:
+            raise ValueError("ERR_CQR_REPLAY_ITEM_MISSING_FIELD: estimated_cost_candidate_t")
+        if item.estimated_cost_hold_t is None:
+            raise ValueError("ERR_CQR_REPLAY_ITEM_MISSING_FIELD: estimated_cost_hold_t")
+        if item.realized_gross_simple_return_t is None:
+            raise ValueError("ERR_CQR_REPLAY_ITEM_MISSING_FIELD: realized_gross_simple_return_t")
+        gate = int(item.gate_action_t)
+        if gate == 1:
+            diff = np.max(np.abs(item.executed_weights_t - item.candidate_weights_t))
+            if diff >= 1e-8:
+                raise ValueError(f"ERR_CQR_GATE_CONSISTENCY: gate=1 but executed!=candidate, max_diff={diff}")
+        elif gate == 0:
+            diff = np.max(np.abs(item.executed_weights_t - item.pre_trade_drifted_weights_t))
+            if diff >= 1e-8:
+                raise ValueError(f"ERR_CQR_GATE_CONSISTENCY: gate=0 but executed!=pre_trade_drifted, max_diff={diff}")
+        gap_expected = item.q_rebalance_t - item.q_hold_t
+        if abs(item.q_gap_t - gap_expected) > 1e-6:
+            raise ValueError(
+                f"ERR_CQR_Q_GAP_INCONSISTENT: q_gap_t={item.q_gap_t} != q_rebalance_t - q_hold_t={gap_expected}"
+            )
+
     def as_batch(
         self,
         items: Sequence[ReplayItem] | None = None,
@@ -263,6 +307,27 @@ class ReplayBuffer:
             "execution_price_next": [item.execution_price_next for item in batch_items],
             "delayed_action_execution_next": [item.delayed_action_execution_next for item in batch_items],
             "split_boundary_t": [item.split_boundary_t for item in batch_items],
+            "pre_trade_drifted_weights_t": _optional_tensor_stack(
+                [item.pre_trade_drifted_weights_t for item in batch_items], target_device,
+                default_shape=batch_items[0].candidate_weights_t.shape,
+            ),
+            "pre_trade_drifted_weights_t_plus_1": _optional_tensor_stack(
+                [item.pre_trade_drifted_weights_t_plus_1 for item in batch_items], target_device,
+                default_shape=batch_items[0].candidate_weights_t.shape,
+            ),
+            "estimated_cost_candidate_t": _tensor_column(
+                [item.estimated_cost_candidate_t for item in batch_items], target_device
+            ),
+            "estimated_cost_hold_t": _tensor_column(
+                [item.estimated_cost_hold_t for item in batch_items], target_device
+            ),
+            "realized_gross_simple_return_t": _tensor_column(
+                [item.realized_gross_simple_return_t for item in batch_items], target_device
+            ),
+            "prev_weights_t": _optional_tensor_stack(
+                [item.prev_weights_t for item in batch_items], target_device,
+                default_shape=batch_items[0].candidate_weights_t.shape,
+            ),
         }
 
     def _append(self, item: ReplayItem) -> None:
@@ -396,6 +461,20 @@ def _unit_interval_float(name: str, value: Any) -> float:
 
 def _tensor_stack(values: Sequence[np.ndarray], device: torch.device) -> torch.Tensor:
     return torch.as_tensor(np.stack(values), dtype=torch.float32, device=device)
+
+
+def _optional_tensor_stack(
+    values: Sequence[np.ndarray | None],
+    device: torch.device,
+    default_shape: tuple[int, ...] = (1,),
+) -> torch.Tensor:
+    if any(v is None for v in values):
+        sample = next((v for v in values if v is not None), None)
+        nan_row = np.full(sample.shape if sample is not None else default_shape, np.nan, dtype=np.float32)
+        resolved = [nan_row if v is None else np.asarray(v, dtype=np.float32) for v in values]
+    else:
+        resolved = [np.asarray(v, dtype=np.float32) for v in values]
+    return torch.as_tensor(np.stack(resolved), dtype=torch.float32, device=device)
 
 
 def _tensor_column(values: Sequence[float | int | None], device: torch.device) -> torch.Tensor:

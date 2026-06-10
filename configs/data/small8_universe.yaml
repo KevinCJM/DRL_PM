@@ -1,0 +1,56 @@
+description: Small-8 ETF/LOF universe for OTAR V2 protocol validation.
+selection_protocol:
+  protocol_id: otar_v2_s0_20260605
+  selection_date: "2021-12-31"
+  selection_rule: pre-specified diversified subset of Core-13 ETF/LOF universe; no full-sample return, Sharpe, drawdown, or CVaR screening.
+  candidate_pool_source: configs/data/core13_universe.yaml
+  future_performance_screening_used: false
+assets:
+  - ts_code: 510300.SH
+    symbol: "510300"
+    name: 沪深300ETF华泰柏瑞
+    asset_type: ETF
+    pool: cn_equity
+    asset_bucket: A股宽基/风格
+  - ts_code: 510500.SH
+    symbol: "510500"
+    name: 中证500ETF南方
+    asset_type: ETF
+    pool: cn_equity
+    asset_bucket: A股宽基/风格
+  - ts_code: 510050.SH
+    symbol: "510050"
+    name: 上证50ETF华夏
+    asset_type: ETF
+    pool: cn_equity
+    asset_bucket: A股宽基/风格
+  - ts_code: 159915.SZ
+    symbol: "159915"
+    name: 创业板ETF易方达
+    asset_type: ETF
+    pool: cn_equity
+    asset_bucket: A股宽基/风格
+  - ts_code: 159920.SZ
+    symbol: "159920"
+    name: 恒生ETF华夏
+    asset_type: ETF
+    pool: overseas_equity
+    asset_bucket: 港股/海外权益
+  - ts_code: 513100.SH
+    symbol: "513100"
+    name: 纳指ETF国泰
+    asset_type: ETF
+    pool: overseas_equity
+    asset_bucket: 港股/海外权益
+  - ts_code: 518880.SH
+    symbol: "518880"
+    name: 黄金ETF华安
+    asset_type: ETF
+    pool: commodity_energy
+    asset_bucket: 黄金/贵金属
+  - ts_code: 511010.SH
+    symbol: "511010"
+    name: 国债ETF国泰
+    asset_type: ETF
+    pool: defensive
+    asset_bucket: 债券/固收

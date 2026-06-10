@@ -11,6 +11,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
+from src.config import config_hash
 from src.agents.dqn_agent import DQNAgent
 from src.agents.hybrid_agent import HybridAgent
 from src.agents.ppo_agent import PPOAgent
@@ -21,6 +22,7 @@ from src.envs.state import DecisionMarketState, PortfolioAction, PortfolioState
 from src.models.cost_estimator import CostEstimator
 from src.models.distributional_cvar_gated_ppo import DistributionalCVaRGatedPPO
 from src.models.dqn_gated_multitask_cnn_ppo import FullGatedModel
+from src.models.otar_cqr_gate import OTarCQRGate
 from src.models.partial_rebalance_gated_ppo import PartialRebalanceGatedPPO
 from src.models.preference_conditioned_gated_ppo import PreferenceConditionedGatedPPO
 from src.models.risk_aware_graph_transformer import (
@@ -50,6 +52,16 @@ from src.envs.portfolio_rebalance_env import PortfolioRebalanceEnv
 VALIDATION_METRIC_ALIASES = {
     "validation_penalized_sharpe": "validation_sharpe_minus_drawdown_turnover_penalty",
 }
+
+VALIDATION_ONLY_HPO_PARAMS = {"eta_v"}
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def filter_validation_only_hpo_params(params: Mapping[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in params.items() if k not in VALIDATION_ONLY_HPO_PARAMS}
 
 
 def run_trained_model_experiment(
@@ -106,6 +118,7 @@ def run_trained_model_experiment(
             "equal_weight": dict(benchmark_result.metrics),
         },
         primary_model=model_name,
+        config=runtime_config,
     )
     payload["training_status"] = training_result["status"]
     payload["training_history"] = training_result.get("history", [])
@@ -148,6 +161,7 @@ def run_trained_walk_forward_experiment(
     result["daily_turnover"] = _concat([fold.daily_turnover for fold in fold_results])
     result["daily_rebalance"] = _concat([fold.daily_rebalance for fold in fold_results])
     result["daily_costs"] = _concat([fold.daily_costs for fold in fold_results])
+    result["daily_asset_returns"] = _concat([getattr(fold, "daily_asset_returns", pd.DataFrame()) for fold in fold_results])
     result["baseline_daily_diagnostics"] = _concat([_baseline_daily_diagnostics(fold) for fold in fold_results])
     result["metrics"] = _metrics_from_walk_forward(aggregation, fold_results)
     result["walk_forward_results"] = aggregation["walk_forward_results"]
@@ -180,6 +194,7 @@ def run_seed_stability_training(
         "daily_turnover": [],
         "daily_rebalance": [],
         "daily_costs": [],
+        "daily_asset_returns": [],
         "baseline_daily_diagnostics": [],
     }
     metrics_by_seed: dict[int, dict[str, float]] = {}
@@ -229,6 +244,7 @@ def run_trained_variant_matrix(
         "daily_turnover": [],
         "daily_rebalance": [],
         "daily_costs": [],
+        "daily_asset_returns": [],
         "baseline_daily_diagnostics": [],
     }
     rows: list[dict[str, Any]] = []
@@ -279,6 +295,361 @@ def run_trained_variant_matrix(
     return result
 
 
+def _set_nested_config_value(config: dict[str, Any], dotpath: str, value: Any) -> None:
+    keys = dotpath.split(".")
+    cursor = config
+    for key in keys[:-1]:
+        existing = cursor.get(key)
+        if not isinstance(existing, dict):
+            existing = {}
+            cursor[key] = existing
+        cursor = existing
+    cursor[keys[-1]] = value
+
+
+def expand_otar_formal_matrix(
+    matrix_path: str | Path,
+    base_config: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    path = Path(matrix_path)
+    if not path.exists():
+        raise FileNotFoundError(f"ERR_OTAR_FORMAL_MATRIX_MISSING: {path}")
+    with path.open("r", encoding="utf-8") as f:
+        matrix = json.load(f) if path.suffix == ".json" else __import__("yaml").safe_load(f)
+    if not isinstance(matrix, Mapping):
+        raise ValueError("ERR_OTAR_FORMAL_MATRIX_INVALID: not a mapping")
+
+    ablation_models = matrix.get("ablation_models")
+    if not isinstance(ablation_models, Mapping) or not ablation_models:
+        raise ValueError("ERR_OTAR_FORMAL_MATRIX_MISSING_ABLATION_MODELS")
+    field_map = matrix.get("ablation_field_to_config_path")
+    if not isinstance(field_map, Mapping):
+        raise ValueError("ERR_OTAR_FORMAL_MATRIX_MISSING_FIELD_MAP")
+    universes = matrix.get("universes", [])
+    seeds = matrix.get("seeds", [])
+    tier1 = matrix.get("tier1", {})
+    split = matrix.get("split", {})
+    if not universes:
+        raise ValueError("ERR_OTAR_FORMAL_MATRIX_EMPTY_UNIVERSES")
+    if not seeds:
+        raise ValueError("ERR_OTAR_FORMAL_MATRIX_EMPTY_SEEDS")
+
+    base = deepcopy(dict(base_config)) if base_config else {}
+    child_experiment_type = _otar_child_experiment_type(base)
+    runs: list[dict[str, Any]] = []
+
+    for ablation_id, ablation_spec in ablation_models.items():
+        if not isinstance(ablation_spec, Mapping):
+            continue
+        for universe in universes:
+            for seed in seeds:
+                run_config = deepcopy(base)
+                run_config.setdefault("experiment", {})
+                run_config["experiment"]["type"] = child_experiment_type
+                run_config["experiment"]["ablation_id"] = ablation_id
+                run_config.setdefault("model", {})
+                model_name = _canonical_otar_formal_model_name(
+                    ablation_spec.get("model", "dqn_gated_multitask_cnn_ppo")
+                )
+                run_config["model"]["name"] = model_name
+                _apply_otar_child_model_scope(run_config, str(model_name))
+                for field_key, config_path in field_map.items():
+                    if field_key in ablation_spec:
+                        _set_nested_config_value(run_config, config_path, ablation_spec[field_key])
+                if tier1:
+                    cost_val = tier1.get("cost")
+                    if cost_val is not None:
+                        _set_nested_config_value(run_config, "cost_model.proportional_cost", cost_val)
+                    cq_val = tier1.get("confidence_q")
+                    if cq_val is not None:
+                        _set_nested_config_value(run_config, "reward.confidence_q", cq_val)
+                _set_nested_config_value(run_config, "training.seed", seed)
+                _set_nested_config_value(run_config, "reproducibility.seed", seed)
+                _set_nested_config_value(run_config, "protocol.asset_universe_id", str(universe))
+                _apply_otar_universe(run_config, str(universe))
+                if split:
+                    _apply_otar_split(run_config, split)
+                run_config.setdefault("output", {})
+                run_config["output"]["run_name"] = f"OTAR_{ablation_id}_{universe}_seed{seed}"
+                runs.append(run_config)
+
+    tier2 = matrix.get("tier2")
+    if isinstance(tier2, Mapping):
+        t2_models = tier2.get("models", [])
+        t2_costs = tier2.get("costs", [])
+        t2_seeds = tier2.get("seeds", [])
+        t2_universe = tier2.get("universe", "Small-8")
+        for t2_model in t2_models:
+            for t2_cost in t2_costs:
+                for t2_seed in t2_seeds:
+                    run_config = deepcopy(base)
+                    run_config.setdefault("experiment", {})
+                    run_config["experiment"]["type"] = child_experiment_type
+                    run_config["experiment"]["ablation_id"] = ""
+                    run_config.setdefault("model", {})
+                    model_name = _canonical_otar_formal_model_name(t2_model)
+                    run_config["model"]["name"] = model_name
+                    _apply_otar_child_model_scope(run_config, str(model_name))
+                    _set_nested_config_value(run_config, "cost_model.proportional_cost", t2_cost)
+                    _set_nested_config_value(run_config, "training.seed", t2_seed)
+                    _set_nested_config_value(run_config, "reproducibility.seed", t2_seed)
+                    _set_nested_config_value(run_config, "protocol.asset_universe_id", str(t2_universe))
+                    _apply_otar_universe(run_config, str(t2_universe))
+                    if split:
+                        _apply_otar_split(run_config, split)
+                    run_config.setdefault("output", {})
+                    run_config["output"]["run_name"] = f"OTAR_tier2_{model_name}_cost{t2_cost}_seed{t2_seed}"
+                    runs.append(run_config)
+
+    return runs
+
+
+def run_otar_formal_matrix(
+    base_config: Mapping[str, Any],
+    *,
+    matrix_path: str | Path = "configs/paper/otar_formal_matrix.yaml",
+    run_dir: str | Path | None = None,
+    max_runs: int | None = None,
+    device: Any | None = None,
+    resume_completed: bool = False,
+) -> dict[str, Any]:
+    from src.experiments.registry import ExperimentRegistry, _merge_otar_hpo_grid_sources
+    from src.utils.logger import save_json_atomic, write_run_outputs
+
+    runs = expand_otar_formal_matrix(matrix_path, base_config)
+    if max_runs is not None:
+        runs = runs[: max(0, int(max_runs))]
+    registry = ExperimentRegistry()
+    parent_dir = None if run_dir is None else Path(run_dir)
+    lineage: list[dict[str, Any]] = []
+    result_rows: list[dict[str, Any]] = []
+    for index, child_config in enumerate(runs, start=1):
+        child = deepcopy(dict(child_config))
+        child.setdefault("output", {})
+        run_name = str(child["output"].get("run_name") or f"OTAR_formal_{index:03d}")
+        child["output"]["run_name"] = run_name
+        child = _merge_otar_hpo_grid_sources(child)
+        child["config_hash"] = config_hash(child)
+        child_dir = None if parent_dir is None else parent_dir / f"{index:03d}_{run_name}"
+        if resume_completed and child_dir is not None:
+            resumed = _completed_otar_formal_child_summary(child_dir, child)
+            if resumed is not None:
+                metrics = resumed.get("metrics", {})
+                result_rows.append(
+                    {
+                        "run_name": run_name,
+                        "ablation_id": child.get("experiment", {}).get("ablation_id", ""),
+                        "universe": child.get("protocol", {}).get("asset_universe_id", ""),
+                        "seed": child.get("training", {}).get("seed", child.get("reproducibility", {}).get("seed")),
+                        "model_name": child.get("model", {}).get("name", ""),
+                        "status": "completed",
+                        **(dict(metrics) if isinstance(metrics, Mapping) else {}),
+                    }
+                )
+                lineage.append(
+                    {
+                        "order": index,
+                        "child_run_id": run_name,
+                        "ablation_id": child.get("experiment", {}).get("ablation_id", ""),
+                        "universe": child.get("protocol", {}).get("asset_universe_id", ""),
+                        "status": "completed",
+                        "run_dir": str(child_dir),
+                        "resumed_from_completed_child": True,
+                        "child_config_hash": child["config_hash"],
+                    }
+                )
+                continue
+        experiment = registry.create_experiment(child, device=device, run_dir=child_dir)
+        result = experiment.run()
+        if not isinstance(result, Mapping):
+            result = {"status": "completed", "result": result}
+        status = str(result.get("status", "unknown"))
+        if status != "completed":
+            raise RuntimeError(f"ERR_OTAR_FORMAL_CHILD_NOT_COMPLETED: {run_name}: status={status}")
+        if child_dir is not None:
+            save_json_atomic(_result_summary_for_matrix(result), child_dir / "logs" / "experiment_result.json")
+            write_run_outputs(
+                result,
+                child_dir,
+                config=child,
+                manifest_overrides={
+                    "status": "success",
+                    "parent_run_id": str(_mapping(base_config.get("output")).get("run_name", "otar_formal_matrix")),
+                    "experiment_type": getattr(experiment, "experiment_type", child.get("experiment", {}).get("type")),
+                    "output_name": getattr(experiment, "output_name", None),
+                    "ablation_id": child.get("experiment", {}).get("ablation_id", ""),
+                    "child_config_hash": child["config_hash"],
+                },
+            )
+        metrics = result.get("metrics", {})
+        result_rows.append(
+            {
+                "run_name": run_name,
+                "ablation_id": child.get("experiment", {}).get("ablation_id", ""),
+                "universe": child.get("protocol", {}).get("asset_universe_id", ""),
+                "seed": child.get("training", {}).get("seed", child.get("reproducibility", {}).get("seed")),
+                "model_name": child.get("model", {}).get("name", ""),
+                "status": status,
+                **(dict(metrics) if isinstance(metrics, Mapping) else {}),
+            }
+        )
+        lineage.append(
+            {
+                "order": index,
+                "child_run_id": run_name,
+                "ablation_id": child.get("experiment", {}).get("ablation_id", ""),
+                "universe": child.get("protocol", {}).get("asset_universe_id", ""),
+                "status": status,
+                "run_dir": None if child_dir is None else str(child_dir),
+                "resumed_from_completed_child": False,
+                "child_config_hash": child["config_hash"],
+            }
+        )
+    summary = pd.DataFrame(result_rows)
+    payload = {
+        "status": "completed",
+        "run_count": len(runs),
+        "lineage": lineage,
+        "otar_formal_matrix_summary": summary,
+        "output_name": "otar_formal_matrix_summary",
+    }
+    if parent_dir is not None:
+        save_json_atomic({"status": "completed", "lineage": lineage}, parent_dir / "logs" / "otar_formal_lineage.json")
+    return payload
+
+
+def _completed_otar_formal_child_summary(child_dir: Path, child_config: Mapping[str, Any]) -> dict[str, Any] | None:
+    result_path = child_dir / "logs" / "experiment_result.json"
+    manifest_path = child_dir / "logs" / "run_manifest.json"
+    if not result_path.exists() or not manifest_path.exists():
+        return None
+    result = _read_json_mapping(result_path)
+    manifest = _read_json_mapping(manifest_path)
+    result_status = str(result.get("status", ""))
+    manifest_status = str(manifest.get("status", ""))
+    if result_status != "completed" or manifest_status != "success":
+        return None
+    expected_hash = str(child_config.get("config_hash", ""))
+    actual_hash = str(manifest.get("config_hash") or manifest.get("child_config_hash") or "")
+    if actual_hash != expected_hash:
+        raise RuntimeError(
+            f"ERR_OTAR_FORMAL_RESUME_STALE_CHILD: {child_dir}: config_hash={actual_hash}, expected={expected_hash}"
+        )
+    expected_protocol = _mapping(child_config.get("protocol")).get("protocol_id")
+    expected_cutoff = _mapping(child_config.get("protocol")).get("data_cutoff_date")
+    expected_ablation = _mapping(child_config.get("experiment")).get("ablation_id", "")
+    expected_universe = _mapping(child_config.get("protocol")).get("asset_universe_id", "")
+    mismatches: list[str] = []
+    if manifest.get("protocol_id") != expected_protocol:
+        mismatches.append("protocol_id")
+    if manifest.get("data_cutoff_date") != expected_cutoff:
+        mismatches.append("data_cutoff_date")
+    if manifest.get("ablation_id", "") != expected_ablation:
+        mismatches.append("ablation_id")
+    if manifest.get("asset_universe_id", "") != expected_universe:
+        mismatches.append("asset_universe_id")
+    if mismatches:
+        raise RuntimeError(f"ERR_OTAR_FORMAL_RESUME_STALE_CHILD: {child_dir}: {','.join(mismatches)}")
+    return result
+
+
+def _read_json_mapping(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"ERR_OTAR_FORMAL_RESUME_INVALID_JSON: {path}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"ERR_OTAR_FORMAL_RESUME_INVALID_JSON: {path}")
+    return payload
+
+
+def _result_summary_for_matrix(result: Mapping[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for key, value in result.items():
+        if hasattr(value, "shape") and hasattr(value, "columns"):
+            summary[key] = {
+                "rows": int(value.shape[0]),
+                "columns": [str(column) for column in value.columns],
+            }
+        else:
+            summary[key] = value
+    return summary
+
+
+def _apply_otar_split(run_config: dict[str, Any], split: Mapping[str, Any]) -> None:
+    _set_nested_config_value(run_config, "split.mode", "fixed")
+    for split_name, split_spec in split.items():
+        if not isinstance(split_spec, Mapping):
+            continue
+        for key, value in split_spec.items():
+            _set_nested_config_value(run_config, f"split.{split_name}_{key}", value)
+    test_spec = split.get("test")
+    if isinstance(test_spec, Mapping) and test_spec.get("end") not in (None, ""):
+        _set_nested_config_value(run_config, "data.end_date", test_spec["end"])
+    train_spec = split.get("train")
+    if isinstance(train_spec, Mapping):
+        start = train_spec.get("start")
+        if start not in (None, "", "earliest"):
+            _set_nested_config_value(run_config, "data.start_date", start)
+
+
+def _apply_otar_universe(run_config: dict[str, Any], universe: str) -> None:
+    key = universe.lower().replace("_", "-")
+    run_config.setdefault("data", {})
+    if key in {"small-8", "small8", "small_8"}:
+        run_config["data"]["asset_universe_assets"] = _small8_asset_codes()
+        return
+    if key in {"core-13", "core13", "core_13"}:
+        run_config["data"]["asset_universe_assets"] = []
+        run_config["data"]["asset_universe_pools"] = []
+
+
+def _canonical_otar_formal_model_name(model_name: Any) -> str:
+    name = str(model_name)
+    if name == "dqn_gated_multitask_cnn_ppo":
+        return "full_dqn_gated_multitask_cnn_ppo"
+    return name
+
+
+def _apply_otar_child_model_scope(run_config: dict[str, Any], model_name: str) -> None:
+    if isinstance(run_config.get("hpo"), dict):
+        run_config["hpo"]["trainable_models"] = [str(model_name)]
+        run_config["hpo"]["equal_budget_across_models"] = False
+    native_rl = run_config.get("baselines", {}).get("native_rl") if isinstance(run_config.get("baselines"), Mapping) else None
+    if isinstance(native_rl, dict):
+        native_rl["enabled_models"] = [str(model_name)]
+
+
+def _otar_child_experiment_type(base_config: Mapping[str, Any]) -> str:
+    experiment_config = base_config.get("experiment")
+    experiment_type = str(experiment_config.get("type", "")) if isinstance(experiment_config, Mapping) else ""
+    if experiment_type and experiment_type != "otar_formal_matrix":
+        return experiment_type
+    hpo_config = base_config.get("hpo")
+    return "hyperparameter_sweep" if isinstance(hpo_config, Mapping) and hpo_config.get("enabled") is True else "main_model"
+
+
+def _small8_asset_codes() -> list[str]:
+    path = Path("configs/data/small8_universe.yaml")
+    if not path.exists():
+        return [
+            "510300.SH",
+            "510500.SH",
+            "510050.SH",
+            "159915.SZ",
+            "159920.SZ",
+            "513100.SH",
+            "518880.SH",
+            "511010.SH",
+        ]
+    with path.open("r", encoding="utf-8") as fh:
+        payload = __import__("yaml").safe_load(fh) or {}
+    assets = payload.get("assets") if isinstance(payload, Mapping) else None
+    if not isinstance(assets, Sequence):
+        return []
+    return [str(item.get("ts_code")) for item in assets if isinstance(item, Mapping) and item.get("ts_code")]
+
+
 def run_strategy_backtest(
     config: Mapping[str, Any],
     strategy_factory: Any,
@@ -317,6 +688,7 @@ def run_strategy_backtest(
     payload["baseline_comparison"] = _comparison_rows(
         {model_name: dict(result.metrics)},
         training_summary_rows=[summary_row],
+        config=strategy_config,
     )
     payload["best_checkpoint_path"] = summary_row.get("checkpoint_best_path")
     payload["last_checkpoint_path"] = summary_row.get("checkpoint_last_path")
@@ -358,6 +730,7 @@ def run_walk_forward_backtest(
     daily_turnover = _concat([result.daily_turnover for result in fold_results])
     daily_rebalance = _concat([result.daily_rebalance for result in fold_results])
     daily_costs = _concat([result.daily_costs for result in fold_results])
+    daily_asset_returns = _concat([getattr(result, "daily_asset_returns", pd.DataFrame()) for result in fold_results])
     baseline_daily_diagnostics = _concat([_baseline_daily_diagnostics(result) for result in fold_results])
     metrics = _metrics_from_walk_forward(aggregation, fold_results)
     return {
@@ -369,6 +742,7 @@ def run_walk_forward_backtest(
         "daily_turnover": daily_turnover,
         "daily_rebalance": daily_rebalance,
         "daily_costs": daily_costs,
+        "daily_asset_returns": daily_asset_returns,
         "baseline_daily_diagnostics": baseline_daily_diagnostics,
         "walk_forward_results": aggregation["walk_forward_results"],
         "all_oos_daily_returns": aggregation["all_oos_daily_returns"],
@@ -394,6 +768,7 @@ def run_seed_stability_backtests(
         "daily_turnover": [],
         "daily_rebalance": [],
         "daily_costs": [],
+        "daily_asset_returns": [],
         "baseline_daily_diagnostics": [],
     }
     metrics_by_seed: dict[int, dict[str, float]] = {}
@@ -439,6 +814,7 @@ def run_strategy_comparison(
         "daily_turnover": [],
         "daily_rebalance": [],
         "daily_costs": [],
+        "daily_asset_returns": [],
         "baseline_daily_diagnostics": [],
     }
     metrics: dict[str, Any] = {}
@@ -485,6 +861,7 @@ def run_strategy_comparison(
         frames["daily_turnover"].append(result.daily_turnover)
         frames["daily_rebalance"].append(result.daily_rebalance)
         frames["daily_costs"].append(result.daily_costs)
+        frames["daily_asset_returns"].append(getattr(result, "daily_asset_returns", pd.DataFrame()))
         frames["baseline_daily_diagnostics"].append(result.baseline_daily_diagnostics)
         summary_row, history_frame = _baseline_training_artifacts(model_name, strategy, result.baseline_daily_diagnostics)
         _block_rankable_without_paper_model_id(model_name, result.baseline_daily_diagnostics, summary_row)
@@ -506,8 +883,9 @@ def run_strategy_comparison(
         "daily_turnover": _concat(frames["daily_turnover"]),
         "daily_rebalance": _concat(frames["daily_rebalance"]),
         "daily_costs": _concat(frames["daily_costs"]),
+        "daily_asset_returns": _concat(frames["daily_asset_returns"]),
         "baseline_daily_diagnostics": _concat(frames["baseline_daily_diagnostics"]),
-        "baseline_comparison": _comparison_rows(metrics, training_summary_rows=training_summary_rows),
+        "baseline_comparison": _comparison_rows(metrics, training_summary_rows=training_summary_rows, config=config),
         "baseline_training_summary": pd.DataFrame(training_summary_rows),
         "baseline_training_history": _concat(training_history_frames) if training_history_frames else pd.DataFrame(),
         **paired,
@@ -609,6 +987,7 @@ def _train_and_backtest(
             "equal_weight": dict(benchmark_result.metrics),
         },
         primary_model=model_name,
+        config=runtime_config,
     )
     return payload, backtest_result
 
@@ -634,6 +1013,9 @@ def build_hybrid_agent(config: Mapping[str, Any]) -> HybridAgent:
     online_gate, target_gate = _dqn_gate_modules(model, target_model)
     dqn_agent = None
     if dqn_enabled and online_gate is not None and target_gate is not None:
+        model_config = _mapping(config.get("model"))
+        use_risk_state = bool(model_config.get("use_risk_state", False))
+        risk_state_dim = int(model_config.get("risk_state_dim", 8))
         dqn_agent = DQNAgent(
             online_gate,
             target_gate,
@@ -641,6 +1023,8 @@ def build_hybrid_agent(config: Mapping[str, Any]) -> HybridAgent:
             device=device,
             encoder=model.encoder,
             target_encoder=target_model.encoder,
+            use_risk_state=use_risk_state,
+            risk_state_dim=risk_state_dim,
         )
         dqn_agent.hard_update_target_network(online_gate, target_gate)
     agent = HybridAgent(
@@ -676,9 +1060,13 @@ def _auxiliary_enabled(config: Mapping[str, Any]) -> bool:
     return True
 
 
-def _model_class(config: Mapping[str, Any]) -> type[FullGatedModel]:
-    model_config = config.get("model")
-    experiment_config = config.get("experiment")
+def _model_class(config: Mapping[str, Any] | str) -> type[FullGatedModel]:
+    if isinstance(config, str):
+        model_config: Mapping[str, Any] = {"name": config}
+        experiment_config: Mapping[str, Any] = {}
+    else:
+        model_config = config.get("model")
+        experiment_config = config.get("experiment")
     configured_name = model_config.get("name") if isinstance(model_config, Mapping) else None
     experiment_type = experiment_config.get("type") if isinstance(experiment_config, Mapping) else None
     key = str(configured_name or experiment_type or "full_dqn_gated_multitask_cnn_ppo").lower()
@@ -689,6 +1077,8 @@ def _model_class(config: Mapping[str, Any]) -> type[FullGatedModel]:
         return UncertaintyAwareGatedPPO
     if "distributional" in key or "cvar" in key:
         return DistributionalCVaRGatedPPO
+    if "otar_cqr" in key or "cqr_gate" in key:
+        return OTarCQRGate
     if "partial" in key:
         return PartialRebalanceGatedPPO
     return FullGatedModel
@@ -717,6 +1107,8 @@ def _dqn_gate_modules(model: FullGatedModel, target_model: FullGatedModel) -> tu
             _DistributionalGateDQNAdapter(model),
             _DistributionalGateDQNAdapter(target_model),
         )
+    if isinstance(model, OTarCQRGate):
+        return (model.cqr_critic, target_model.cqr_critic)
     return model.gate, target_model.gate
 
 
@@ -879,6 +1271,14 @@ class TrainedFullGatedStrategy(BaseStrategy):
             "turnover_rate_at_decision": np.asarray(state.turnover_rate_at_decision, dtype=np.float32),
             "portfolio_value": np.asarray(portfolio.portfolio_value, dtype=np.float32),
         }
+        model_config = mapping(self.config.get("model"))
+        if bool(model_config.get("use_risk_state", False)):
+            if portfolio.risk_state_vector is None:
+                raise DataContractError(
+                    "ERR_OBSERVATION_RISK_STATE_MISSING",
+                    "ERR_OBSERVATION_RISK_STATE_MISSING: trained strategy portfolio_state.risk_state_vector",
+                )
+            observation["risk_state"] = np.asarray(portfolio.risk_state_vector, dtype=np.float32)
         return self.ppo_agent.select_action(observation, deterministic=True)
 
 
@@ -1091,8 +1491,10 @@ def result_mapping(
         "daily_turnover": _with_model_name(result.daily_turnover, model_name),
         "daily_rebalance": _with_model_name(result.daily_rebalance, model_name),
         "daily_costs": _with_model_name(result.daily_costs, model_name),
+        "daily_asset_returns": _with_model_name(getattr(result, "daily_asset_returns", pd.DataFrame()), model_name),
         "baseline_daily_diagnostics": _baseline_daily_diagnostics(result),
         "run_manifest": result.run_manifest,
+        "v_init_resolved_value": result.run_manifest.get("v_init_resolved_value"),
         **_availability_mask_contract_payload(result, artifacts),
         "training_status": "not_applicable_for_backtest_pipeline",
         "device": config.get("device"),
@@ -1654,6 +2056,28 @@ def objective_metric(result: Mapping[str, Any], metric: str, config: Mapping[str
                 max_drawdown = _max_drawdown(nav)
                 average_turnover = float(metrics.get("average_turnover", 0.0) or 0.0)
                 return sharpe - max_drawdown - average_turnover
+    if "cvar95_loss" in metric_key or "cvar_loss" in metric_key:
+        daily_returns = result.get("daily_returns")
+        if isinstance(daily_returns, pd.DataFrame):
+            returns = pd.to_numeric(daily_returns.get("net_return", daily_returns.get("return")), errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+            if not returns.empty:
+                return _cvar_loss(returns)
+    if "max_drawdown" in metric_key:
+        daily_returns = result.get("daily_returns")
+        if isinstance(daily_returns, pd.DataFrame):
+            nav = pd.to_numeric(daily_returns.get("nav"), errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+            if not nav.empty:
+                return _max_drawdown(nav)
+    if "sortino" in metric_key:
+        daily_returns = result.get("daily_returns")
+        if isinstance(daily_returns, pd.DataFrame):
+            returns = pd.to_numeric(daily_returns.get("net_return", daily_returns.get("return")), errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+            if not returns.empty:
+                downside = returns[returns < 0.0]
+                downside_std = float(downside.std(ddof=0)) if len(downside) > 0 else 0.0
+                ann_return = float(returns.mean() * 252.0)
+                ann_vol = float(downside_std * np.sqrt(252.0))
+                return 0.0 if ann_vol <= 0.0 else ann_return / ann_vol
     raise ValueError(f"ERR_EXPERIMENT_METRIC_MISSING: {metric_key}")
 
 
@@ -1706,7 +2130,34 @@ def _validation_return_risk_cost_constrained(
 def _activity_constraints(config: Mapping[str, Any] | None) -> Mapping[str, Any]:
     if not isinstance(config, Mapping):
         return {}
-    return mapping(mapping(config.get("hpo")).get("activity_constraints"))
+    constraints = dict(mapping(mapping(config.get("hpo")).get("activity_constraints")))
+    activity = mapping(config.get("execution_activity"))
+    if constraints.get("enabled") is True:
+        return constraints
+    if activity.get("activity_gate_enforced") is True:
+        fallback = dict(constraints)
+        for key in (
+            "min_model_rebalance_hit_rate",
+            "max_model_rebalance_hit_rate",
+            "min_non_initial_turnover_per_opportunity",
+            "max_average_turnover",
+        ):
+            if key in activity:
+                fallback[key] = activity[key]
+        fallback["enabled"] = True
+        fallback.setdefault("scope_activity_protocols", [activity.get("protocol", "daily_gate_with_cost_constraint")])
+        fallback.setdefault(
+            "scope_baseline_families",
+            [
+                "model",
+                "new_model_extension",
+                "native_rl",
+                "native_rl_reimplementation",
+                "platform_native_rl",
+            ],
+        )
+        return fallback
+    return constraints
 
 
 def _cvar_loss(returns: pd.Series) -> float:
@@ -2014,6 +2465,7 @@ def _comparison_rows(
     *,
     primary_model: str | None = None,
     training_summary_rows: Any | None = None,
+    config: Mapping[str, Any] | None = None,
 ) -> pd.DataFrame:
     summary_by_model = _training_summary_by_model(training_summary_rows)
     rows: list[dict[str, Any]] = []
@@ -2029,8 +2481,63 @@ def _comparison_rows(
         _ensure_hybrid_dqn_comparison_metadata(row)
         row.update({str(key): value for key, value in dict(metric_values).items()})
         _block_diagnostic_shared_dqn(row)
+        _apply_activity_failure_to_comparison_row(row, config)
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def _apply_activity_failure_to_comparison_row(row: dict[str, Any], config: Mapping[str, Any] | None) -> None:
+    reason = _comparison_activity_failure_reason(row, config)
+    if not reason:
+        return
+    row["activity_failure_reason"] = reason
+    row["final_activity_failure_reason"] = reason
+    row["final_activity_passed"] = False
+    row["rankable_in_unified_table"] = False
+    row["paper_included"] = False
+    if _missing_scalar(row.get("reason")):
+        row["reason"] = reason
+
+
+def _comparison_activity_failure_reason(row: Mapping[str, Any], config: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(config, Mapping):
+        return None
+    activity = mapping(config.get("execution_activity"))
+    if activity.get("activity_gate_enforced") is not True:
+        return None
+    constraints = _activity_constraints(config)
+    if constraints.get("enabled") is not True:
+        return None
+    protocol = str(activity.get("protocol", "monthly_gate"))
+    scope_protocols = {str(item) for item in constraints.get("scope_activity_protocols", [])}
+    if scope_protocols and protocol not in scope_protocols:
+        return None
+    if not _comparison_row_in_activity_scope(row, constraints):
+        return None
+    hit_rate = _finite_float(row.get("model_rebalance_hit_rate"), 0.0)
+    turnover_per_opportunity = _finite_float(row.get("non_initial_turnover_per_opportunity"), 0.0)
+    avg_turnover = _finite_float(row.get("average_turnover"), 0.0)
+    if hit_rate < float(constraints.get("min_model_rebalance_hit_rate", 0.05)):
+        return "failed_low_trade_activity"
+    if turnover_per_opportunity < float(constraints.get("min_non_initial_turnover_per_opportunity", 0.002)):
+        return "failed_low_trade_activity"
+    max_hit_rate = constraints.get("max_model_rebalance_hit_rate")
+    if max_hit_rate is not None and hit_rate > float(max_hit_rate):
+        return "failed_high_trade_activity"
+    max_average_turnover = constraints.get("max_average_turnover")
+    if max_average_turnover is not None and avg_turnover > float(max_average_turnover):
+        return "failed_high_trade_activity"
+    return None
+
+
+def _comparison_row_in_activity_scope(row: Mapping[str, Any], constraints: Mapping[str, Any]) -> bool:
+    if str(row.get("role", "")).strip().lower() == "model":
+        return True
+    scope_families = {str(item) for item in constraints.get("scope_baseline_families", [])}
+    family = str(row.get("baseline_family", "")).strip()
+    if family and family in scope_families:
+        return True
+    return _truthy_scalar(row.get("platform_native_rl_training"))
 
 
 def _training_summary_by_model(training_summary_rows: Any | None) -> dict[str, dict[str, Any]]:
@@ -2632,6 +3139,14 @@ def _truthy_scalar(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y"}
 
 
+def _finite_float(value: Any, default: float = 0.0) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return default
+    return result if np.isfinite(result) else default
+
+
 def _nonnegative_int(value: Any) -> int:
     if _missing_scalar(value):
         return 0
@@ -2730,5 +3245,7 @@ __all__ = [
     "run_walk_forward_backtest",
     "run_seed_stability_backtests",
     "run_trained_variant_matrix",
+    "expand_otar_formal_matrix",
+    "run_otar_formal_matrix",
     "strategy_runtime_config",
 ]

@@ -91,6 +91,8 @@ class DQNAgent:
         device: torch.device | str | None = None,
         encoder: nn.Module | None = None,
         target_encoder: nn.Module | None = None,
+        use_risk_state: bool = False,
+        risk_state_dim: int = 8,
     ):
         self.online_network = online_network
         self.target_network = target_network
@@ -98,6 +100,8 @@ class DQNAgent:
         self.target_encoder = target_encoder
         self.config = config if isinstance(config, DQNAgentConfig) else DQNAgentConfig.from_mapping(config)
         self.device = torch.device("cpu" if device is None else device)
+        self.use_risk_state = bool(use_risk_state)
+        self.risk_state_dim = int(risk_state_dim)
         self.online_network.to(self.device)
         self.target_network.to(self.device)
         if self.encoder is not None:
@@ -352,8 +356,17 @@ class DQNAgent:
         )
         if self.config.detach_encoder:
             with torch.no_grad():
-                return encoder(market_image).detach()
-        return encoder(market_image)
+                latent = encoder(market_image).detach()
+        else:
+            latent = encoder(market_image)
+        if self.use_risk_state:
+            risk_state = torch.as_tensor(
+                np.stack([np.asarray(state.get("risk_state", np.zeros(self.risk_state_dim)), dtype=np.float32) for state in states]),
+                dtype=torch.float32,
+                device=self.device,
+            )
+            latent = torch.cat([latent, risk_state], dim=-1)
+        return latent
 
     def _sample_weights(self, sample: Mapping[str, Any], batch_size: int) -> torch.Tensor:
         if isinstance(sample, Mapping):

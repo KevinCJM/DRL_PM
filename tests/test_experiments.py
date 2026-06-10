@@ -530,6 +530,57 @@ def test_hpo_equal_budget_runs_all_trainable_models(tmp_path, monkeypatch):
     assert search_manifest["log_scale"].tolist() == [True, True]
 
 
+def test_hpo_equal_budget_isolates_final_activity_failed_child(tmp_path, monkeypatch):
+    config = _config(tmp_path, "main_model")
+    config["hpo"]["enabled"] = True
+    config["hpo"]["equal_budget_across_models"] = True
+    config["hpo"]["trainable_models"] = ["activity_failed_child", "active_child"]
+    config["hpo"]["direction"] = "maximize"
+    config["hpo"]["search_space"] = {}
+    config["output"]["run_name"] = "hpo_equal_budget_activity_child"
+    experiment = ExperimentRegistry().create_experiment(
+        config,
+        device="cpu",
+        run_dir=tmp_path / "hpo_equal_budget_activity_child",
+    )
+
+    def fake_run_hpo_single(child_experiment):
+        model_name = child_experiment.active_model_name
+        if model_name == "activity_failed_child":
+            raise RuntimeError("ERR_HPO_FINAL_ACTIVITY_NO_PASSING_TRIAL: label=best reasons=failed_high_trade_activity")
+        trials = pd.DataFrame([{column: "" for column in run_experiment.HPO_TRIAL_COLUMNS}], dtype=object)
+        trials.loc[0, "model_name"] = model_name
+        trials.loc[0, "study_name"] = child_experiment.config["hpo"]["study_name"]
+        trials.loc[0, "trial_number"] = 0
+        trials.loc[0, "state"] = "complete"
+        trials.loc[0, "objective_value"] = 1.0
+        return {
+            "status": "completed",
+            "hpo_model_name": model_name,
+            "study_name": child_experiment.config["hpo"]["study_name"],
+            "best_trial_number": 0,
+            "best_value": 1.0,
+            "best_params": {},
+            "trial_count": 1,
+            "hpo_trials": trials,
+            "metrics": {"sharpe": 1.0},
+            "daily_returns": pd.DataFrame({"date": ["2024-01-02"], "net_return": [0.01], "nav": [1.01]}),
+        }
+
+    monkeypatch.setattr(run_experiment, "_run_hpo_single", fake_run_hpo_single)
+
+    result = run_experiment.run_hpo(experiment)
+    comparison = result["hpo_model_final_comparison"].set_index("model_name")
+
+    assert result["status"] == "completed"
+    assert result["best_model_name"] == "active_child"
+    assert bool(comparison.loc["activity_failed_child", "rankable_in_unified_table"]) is False
+    assert bool(comparison.loc["activity_failed_child", "paper_included"]) is False
+    assert comparison.loc["activity_failed_child", "final_activity_failure_reason"].startswith(
+        "ERR_HPO_FINAL_ACTIVITY_NO_PASSING_TRIAL"
+    )
+
+
 def test_hpo_equal_budget_diagnostic_continues_after_failed_model(tmp_path, monkeypatch):
     config = _config(tmp_path, "main_model")
     config["hpo"]["enabled"] = True
@@ -1062,6 +1113,45 @@ def test_specialized_experiment_model_factory(tmp_path, monkeypatch):
         "distributional_cvar_gated_ppo",
         "partial_rebalance_gated_ppo",
     ]
+
+
+def test_comparison_rows_enforce_execution_activity_without_hpo_constraints():
+    config = deepcopy(DEFAULT_CONFIG)
+    config["hpo"]["activity_constraints"]["enabled"] = False
+    config["execution_activity"].update(
+        {
+            "protocol": "daily_gate_with_cost_constraint",
+            "scheduler_blocks_model_actions": False,
+            "activity_gate_enforced": True,
+            "min_model_rebalance_hit_rate": 0.05,
+            "max_model_rebalance_hit_rate": 0.6,
+            "min_non_initial_turnover_per_opportunity": 0.002,
+        }
+    )
+
+    comparison = pipeline._comparison_rows(
+        {
+            "preference_conditioned_gated_ppo": {
+                "model_rebalance_hit_rate": 0.0,
+                "non_initial_turnover_per_opportunity": 0.0,
+                "average_turnover": 0.001,
+            },
+            "equal_weight": {
+                "model_rebalance_hit_rate": 1.0,
+                "non_initial_turnover_per_opportunity": 0.01,
+                "average_turnover": 0.004,
+            },
+        },
+        primary_model="preference_conditioned_gated_ppo",
+        config=config,
+    ).set_index("model_name")
+
+    model = comparison.loc["preference_conditioned_gated_ppo"]
+    benchmark = comparison.loc["equal_weight"]
+    assert bool(model["rankable_in_unified_table"]) is False
+    assert bool(model["paper_included"]) is False
+    assert model["activity_failure_reason"] == "failed_low_trade_activity"
+    assert benchmark["activity_failure_reason"] != "failed_high_trade_activity"
 
 
 def test_result_mapping_overrides_strategy_daily_model_name(monkeypatch):

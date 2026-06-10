@@ -122,8 +122,34 @@ print("ready")
 PY
 }
 
+p16_promotion_status() {
+  ./.venv/bin/python - <<'PY'
+import csv
+from pathlib import Path
+
+path = Path("results/paper_tables/p16_promotion_gate/promotion_gate_report.csv")
+if not path.exists():
+    print("pending")
+    raise SystemExit(0)
+with path.open("r", encoding="utf-8", newline="") as fh:
+    rows = list(csv.DictReader(fh))
+if not rows:
+    print("pending")
+    raise SystemExit(0)
+passed = any(
+    str(row.get("promotion_gate_passed") or "").strip().lower() == "true"
+    for row in rows
+)
+print("passed" if passed else "failed")
+PY
+}
+
 ensure_p16_wrapper() {
   if p16_formal_ready >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ "$(p16_promotion_status)" == "failed" ]]; then
+    echo "[skip] $(timestamp) p16_promotion_gate_failed_no_formal"
     return 0
   fi
   if process_active 'scripts/run_exp35b_p16_gate_and_formal.sh'; then
@@ -294,6 +320,11 @@ echo "[start] $(timestamp) p16_final_early_waiter"
 acquire_lock_or_exit
 
 while true; do
+  p16_gate_status="$(p16_promotion_status)"
+  if [[ "$p16_gate_status" == "failed" ]]; then
+    echo "[skip] $(timestamp) p16_promotion_gate_failed_no_final"
+    exit 0
+  fi
   ensure_p16_wrapper
   if is_ready; then
     break

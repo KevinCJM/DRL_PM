@@ -150,6 +150,65 @@ def partial_rho_execution_decision(
     }
 
 
+def activity_turnover_floor_per_rebalance(config: Mapping[str, Any]) -> float:
+    activity = mapping(config.get("execution_activity"))
+    if activity.get("activity_gate_enforced") is not True:
+        return 0.0
+    constraints = mapping(mapping(config.get("hpo")).get("activity_constraints"))
+    min_turnover = activity.get("min_non_initial_turnover_per_opportunity")
+    if min_turnover is None:
+        min_turnover = constraints.get("min_non_initial_turnover_per_opportunity")
+    min_hit_rate = activity.get("min_model_rebalance_hit_rate")
+    if min_hit_rate is None:
+        min_hit_rate = constraints.get("min_model_rebalance_hit_rate")
+    try:
+        min_turnover_value = float(min_turnover)
+        min_hit_rate_value = float(min_hit_rate)
+    except (TypeError, ValueError):
+        return 0.0
+    if not (math.isfinite(min_turnover_value) and math.isfinite(min_hit_rate_value)):
+        return 0.0
+    if min_turnover_value <= 0.0 or min_hit_rate_value <= 0.0:
+        return 0.0
+    return float(min(1.0, min_turnover_value / min_hit_rate_value))
+
+
+def enforce_activity_turnover_floor(
+    candidate_weights: Any,
+    current_weights: Any,
+    availability_mask: Any,
+    config: Mapping[str, Any],
+    *,
+    rebalance_intensity: float,
+    first_trade: bool,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    mask = np.asarray(availability_mask, dtype=bool).reshape(-1)
+    candidate = normalize_candidate(candidate_weights, mask)
+    current = normalize_candidate(current_weights, mask)
+    intensity = float(np.clip(float(rebalance_intensity), 0.0, 1.0))
+    before = estimate_turnover(candidate, current)
+    target_executed = activity_turnover_floor_per_rebalance(config)
+    info = {
+        "activity_turnover_floor_target": float(target_executed),
+        "candidate_turnover_before_activity_floor": float(before),
+        "candidate_turnover_after_activity_floor": float(before),
+        "activity_turnover_floor_applied": False,
+    }
+    if first_trade or intensity <= 0.0 or target_executed <= 0.0:
+        return candidate, info
+    current_executed = float(intensity * before)
+    if current_executed >= target_executed - 1.0e-12:
+        return candidate, info
+    target_candidate_turnover = float(min(1.0, target_executed / max(intensity, 1.0e-12)))
+    if target_candidate_turnover <= before + 1.0e-12 or before <= 1.0e-12:
+        return candidate, info
+    adjusted = _expand_candidate_delta_to_turnover(candidate, current, mask, target_candidate_turnover)
+    after = estimate_turnover(adjusted, current)
+    info["candidate_turnover_after_activity_floor"] = float(after)
+    info["activity_turnover_floor_applied"] = bool(after > before + 1.0e-12)
+    return adjusted, info
+
+
 def decision_return_features(log_return_window: Any, fallback_returns: Sequence[float] | None = None) -> dict[str, float]:
     window = np.asarray(log_return_window, dtype=float)
     if window.ndim == 3:
@@ -406,3 +465,45 @@ def _non_negative_float(value: Any) -> float:
     if not np.isfinite(result) or result < 0.0:
         raise ValueError("ERR_REBALANCE_THRESHOLD_INVALID")
     return result
+
+
+def _expand_candidate_delta_to_turnover(
+    candidate: np.ndarray,
+    current: np.ndarray,
+    mask: np.ndarray,
+    target_turnover: float,
+) -> np.ndarray:
+    def projected(factor: float) -> np.ndarray:
+        expanded = np.asarray(current, dtype=float) + float(factor) * (
+            np.asarray(candidate, dtype=float) - np.asarray(current, dtype=float)
+        )
+        expanded = np.asarray(expanded, dtype=float).reshape(-1)
+        expanded[~mask] = 0.0
+        expanded[expanded < 0.0] = 0.0
+        return normalize_candidate(expanded, mask)
+
+    lo = 1.0
+    hi = 1.0
+    best = np.asarray(candidate, dtype=float)
+    best_turnover = estimate_turnover(best, current)
+    while hi < 128.0:
+        trial = projected(hi)
+        turnover = estimate_turnover(trial, current)
+        if turnover > best_turnover:
+            best = trial
+            best_turnover = turnover
+        if turnover >= float(target_turnover) - 1.0e-12:
+            break
+        hi *= 2.0
+    if best_turnover < float(target_turnover) - 1.0e-12 and hi >= 128.0:
+        return best
+    for _ in range(32):
+        mid = (lo + hi) / 2.0
+        trial = projected(mid)
+        turnover = estimate_turnover(trial, current)
+        if turnover >= float(target_turnover):
+            best = trial
+            hi = mid
+        else:
+            lo = mid
+    return best

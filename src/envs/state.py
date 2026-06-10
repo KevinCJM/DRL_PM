@@ -30,6 +30,8 @@ class PortfolioState:
     last_valuation_price: np.ndarray | None = None
     sellable_mask: np.ndarray | None = None
     frozen_weight: np.ndarray | None = None
+    risk_state_vector: np.ndarray | None = None
+    prev_drawdown_abs: float = 0.0
 
     def __post_init__(self) -> None:
         self.date = _required_timestamp("date", self.date)

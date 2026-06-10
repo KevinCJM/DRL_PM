@@ -1,0 +1,82 @@
+protocol_id: otar_v2_s0_20260605
+contracts:
+  markowitz_max_sharpe:
+    rebalance_frequency: daily
+    transaction_cost_model: fixed_10bps
+    input_feature_set: adj_nav_returns
+    hpo_budget: 20
+    long_only: true
+    max_weight: 1.0
+    covariance_estimator: shrinkage
+    expected_return_estimator: rolling_mean
+    lookback_window: 252
+  risk_parity:
+    rebalance_frequency: daily
+    transaction_cost_model: fixed_10bps
+    input_feature_set: adj_nav_returns
+    hpo_budget: 20
+    long_only: true
+    max_weight: 1.0
+    covariance_estimator: shrinkage
+    expected_return_estimator: null
+    lookback_window: 252
+  equal_weight_buy_and_hold:
+    rebalance_frequency: buy_and_hold
+    transaction_cost_model: fixed_10bps
+    input_feature_set: adj_nav_returns
+    hpo_budget: 0
+    long_only: true
+    max_weight: 1.0
+    covariance_estimator: null
+    expected_return_estimator: null
+    lookback_window: null
+  equal_weight_periodic:
+    rebalance_frequency: monthly
+    transaction_cost_model: fixed_10bps
+    input_feature_set: adj_nav_returns
+    hpo_budget: 0
+    long_only: true
+    max_weight: 1.0
+    covariance_estimator: null
+    expected_return_estimator: null
+    lookback_window: null
+  ppo_daily:
+    rebalance_frequency: daily
+    transaction_cost_model: fixed_10bps
+    input_feature_set: core13_feature_matrix_M6
+    hpo_budget: 30
+    long_only: true
+    max_weight: 1.0
+    covariance_estimator: null
+    expected_return_estimator: null
+    lookback_window: null
+  dqn_gated_ppo_daily:
+    rebalance_frequency: daily
+    transaction_cost_model: fixed_10bps
+    input_feature_set: core13_feature_matrix_M6
+    hpo_budget: 30
+    long_only: true
+    max_weight: 1.0
+    covariance_estimator: null
+    expected_return_estimator: null
+    lookback_window: null
+  cnn_ppo_daily:
+    rebalance_frequency: daily
+    transaction_cost_model: fixed_10bps
+    input_feature_set: core13_feature_matrix_M6
+    hpo_budget: 30
+    long_only: true
+    max_weight: 1.0
+    covariance_estimator: null
+    expected_return_estimator: null
+    lookback_window: null
+  hard_rolling_cvar_gated_ppo:
+    rebalance_frequency: daily
+    transaction_cost_model: fixed_10bps
+    input_feature_set: core13_feature_matrix_M6
+    hpo_budget: 30
+    long_only: true
+    max_weight: 1.0
+    covariance_estimator: null
+    expected_return_estimator: null
+    lookback_window: null

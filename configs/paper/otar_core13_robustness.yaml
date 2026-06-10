@@ -1,0 +1,142 @@
+experiment:
+  type: hyperparameter_sweep
+reward:
+  mode: A13_otar_soft_ru_cvar_fixed
+  lambda_tail: 0.10
+  confidence_q: 0.95
+  tau: 0.005
+  tau_v: 0.005
+  eta_v: 0.00005
+  lambda_dd: 0.20
+  lambda_turnover: 0.001
+  v_update_mode: smooth_robbins_monro
+  v_clip_min: -0.10
+  v_clip_max: 0.20
+  v_init: 0.0
+  v_init_source: training_warmup_loss_quantile
+  v_init_warmup_days: 60
+  v_init_confidence_q: 0.95
+data:
+  asset_universe_path: data/processed/core13_asset_universe.csv
+  panel_path: data/processed/core13_etf_lof_daily_panel.parquet
+  wide_open_path: data/processed/core13_wide_open.parquet
+  wide_high_path: data/processed/core13_wide_high.parquet
+  wide_low_path: data/processed/core13_wide_low.parquet
+  wide_close_path: data/processed/core13_wide_close.parquet
+  wide_adj_nav_path: data/processed/core13_wide_adj_nav_tushare.parquet
+  wide_pre_close_path: data/processed/core13_wide_pre_close.parquet
+  wide_pct_chg_path: data/processed/core13_wide_pct_chg.parquet
+  wide_log_return_path: data/processed/core13_wide_log_return.parquet
+  wide_amount_path: data/processed/core13_wide_amount.parquet
+  wide_vol_path: data/processed/core13_wide_vol.parquet
+  wide_turnover_rate_path: data/processed/core13_wide_turnover_rate.parquet
+  all_metrics_features_path: data/metrics_factory/core13_all_metrics_features.parquet
+  download_manifest_path: data/reports/core13_data_download_manifest.json
+  metrics_manifest_path: data/reports/core13_metrics_factory_manifest.json
+  start_date: "2014-01-01"
+  end_date: "2026-05-20"
+  data_mode: availability_mask
+  strict_common_history_mode: false
+data_governance:
+  return_source: adj_nav
+  valuation_source: adj_nav
+  reward_return_source: adj_nav
+  metrics_return_source: adj_nav
+  execution_price_source: ohlcv
+  valuation_table: core13_adj_nav
+  execution_price_table: core13_ohlcv
+  valuation_execution_split: true
+  reward_valuation_split: true
+feature_matrix:
+  input_matrix_id: M6
+  window_size: 60
+feature_reduction:
+  pca:
+    enabled: true
+    explained_variance: 0.95
+model:
+  name: full_dqn_gated_multitask_cnn_ppo
+  default_encoder: cnn
+  latent_dim: 64
+hpo:
+  enabled: true
+  equal_budget_across_models: true
+  n_trials_per_model: 40
+  metric: validation_cvar95_loss
+  objective: validation_cvar95_loss
+  direction: minimize
+  selection_split: validation
+  final_report_split: test
+  trainable_models:
+    - full_dqn_gated_multitask_cnn_ppo
+    - ppo_native
+    - cnn_ppo_native
+    - cage_eiie_distributional
+  search_space:
+    lambda_tail:
+      values: [0.05, 0.10, 0.20, 0.50]
+    lambda_dd:
+      values: [0.0, 0.05, 0.10]
+    confidence_q:
+      values: [0.90, 0.95]
+    tau:
+      values: [0.002, 0.005, 0.010]
+    tau_v:
+      values: [0.002, 0.005, 0.010]
+    eta_v:
+      values: [0.00001, 0.00005, 0.0001]
+baselines:
+  enabled: true
+  traditional:
+    - equal_weight
+    - buy_and_hold
+    - markowitz_max_sharpe
+    - risk_parity
+  native_rl:
+    enabled_models:
+      - full_dqn_gated_multitask_cnn_ppo
+      - ppo_native
+      - cnn_ppo_native
+      - cage_eiie_distributional
+    epochs: 2
+    max_train_steps: 128
+    max_validation_steps: 128
+    max_gradient_updates_per_epoch: 16
+dqn:
+  batch_size: 32
+  warmup_steps: 32
+  target_update_interval: 32
+  use_prioritized_replay: false
+  per_enabled: false
+training:
+  epochs: 2
+  max_train_steps: 128
+  max_validation_steps: 128
+  checkpoint_include_replay_buffer: false
+statistics:
+  primary_metric: validation_cvar95_loss
+reproducibility:
+  seed: 42
+  seeds: [42, 123, 2024, 3407, 9999]
+output:
+  run_name: OTAR_core13_robustness
+protocol:
+  protocol_id: otar_v2_s0_20260605
+  asset_universe_id: core13_v2
+  data_cutoff_date: "2026-05-20"
+rankability:
+  rankable_in_unified_table: false
+  diagnostic_status: diagnostic
+security:
+  path_whitelist:
+    - /Volumes/Extreme SSD/DRL_PM
+rebalance:
+  mode: daily
+execution_activity:
+  protocol: daily_gate_with_cost_constraint
+  scheduler_blocks_model_actions: false
+  activity_gate_enforced: true
+  turnover_optimization_protocol_id: otar_v2_daily_gate
+  min_model_rebalance_hit_rate: 0.05
+  max_model_rebalance_hit_rate: 0.80
+  min_non_initial_turnover_per_opportunity: 0.002

@@ -14,6 +14,7 @@ from src.baselines.cage_common import (
     choose_rho,
     compute_expected_alpha_horizon,
     decision_return_features,
+    enforce_activity_turnover_floor,
     estimate_cost,
     estimate_turnover,
     gate_action_index,
@@ -142,7 +143,7 @@ class RiskAwareGTRCPOStrategy(BaseStrategy):
             mu_1d_decision_visible=mu_1d,
             horizon_config=mapping(section.get("gate_scoring")),
         )
-        rho, scores, score_components, forced_hold_reason = self._rho_action(
+        rho, scores, score_components, forced_hold_reason, policy_adjustment_reason = self._rho_action(
             scheduler_allowed=scheduler_allowed,
             first_trade=first_trade,
             agent_action=action,
@@ -153,6 +154,7 @@ class RiskAwareGTRCPOStrategy(BaseStrategy):
             cvar_loss_5=risk["cvar_loss_5"],
             drawdown=float(portfolio.current_drawdown_abs),
         )
+        agent_raw_rho = max(0.0, min(1.0, float(action.get("raw_rho", action.get("rho", rho)))))
         rho_values = _rho_values(self.config)
         raw_rho = float(rho)
         execution_decision = partial_rho_execution_decision(
@@ -163,6 +165,27 @@ class RiskAwareGTRCPOStrategy(BaseStrategy):
             first_trade=first_trade,
             model_hold_reason=forced_hold_reason,
         )
+        floor_info: dict[str, Any] = {}
+        if int(execution_decision["rebalance_action"]) == 1:
+            candidate, floor_info = enforce_activity_turnover_floor(
+                candidate,
+                current,
+                state.available_mask_at_decision,
+                self.config,
+                rebalance_intensity=float(execution_decision["rho"]),
+                first_trade=first_trade,
+            )
+            if floor_info.get("activity_turnover_floor_applied"):
+                turnover = estimate_turnover(candidate, current)
+                cost = estimate_cost(self.config, turnover)
+                execution_decision = partial_rho_execution_decision(
+                    self.config,
+                    "ra_gt_rcpo",
+                    raw_rho=raw_rho,
+                    estimated_turnover=turnover,
+                    first_trade=first_trade,
+                    model_hold_reason=forced_hold_reason,
+                )
         rho = float(execution_decision["rho"])
         action_index = gate_action_index(rho_values, rho)
         raw_action_index = gate_action_index(rho_values, raw_rho)
@@ -186,6 +209,7 @@ class RiskAwareGTRCPOStrategy(BaseStrategy):
             "gate_action_index": int(action_index),
             "rho": float(rho),
             "raw_rho": float(execution_decision["raw_rho"]),
+            "agent_raw_rho": float(agent_raw_rho),
             "raw_rebalance_intensity": float(execution_decision["raw_rebalance_intensity"]),
             "raw_gate_requested_rebalance": bool(execution_decision["raw_gate_requested_rebalance"]),
             "raw_model_requested_rebalance": bool(execution_decision["raw_model_requested_rebalance"]),
@@ -194,6 +218,14 @@ class RiskAwareGTRCPOStrategy(BaseStrategy):
             "rebalance_intensity": float(execution_decision["rebalance_intensity"]),
             "rebalance_turnover_threshold": float(execution_decision["rebalance_turnover_threshold"]),
             "threshold_turnover_estimate": float(execution_decision["threshold_turnover_estimate"]),
+            "activity_turnover_floor_target": float(floor_info.get("activity_turnover_floor_target", 0.0)),
+            "candidate_turnover_before_activity_floor": float(
+                floor_info.get("candidate_turnover_before_activity_floor", turnover)
+            ),
+            "candidate_turnover_after_activity_floor": float(
+                floor_info.get("candidate_turnover_after_activity_floor", turnover)
+            ),
+            "activity_turnover_floor_applied": bool(floor_info.get("activity_turnover_floor_applied", False)),
             "rebalance_values": json.dumps(scores, sort_keys=True, separators=(",", ":")),
             "gate_score_components": json.dumps(score_components, sort_keys=True, separators=(",", ":")),
             "gate_scoring_mode": str(_gate_scoring_config(self.config, "ra_gt_rcpo").get("mode", "normalized")),
@@ -213,6 +245,7 @@ class RiskAwareGTRCPOStrategy(BaseStrategy):
             "scheduler_pre_allowed": bool(context.get("scheduler_pre_allowed", scheduler_allowed)),
             "first_trade": bool(first_trade),
             "forced_hold_reason": execution_decision["forced_hold_reason"],
+            "learned_rho_policy_adjustment_reason": str(policy_adjustment_reason or ""),
             "execution_weight_mode": "candidate_plus_rho_execution_core",
             "candidate_weights_json": weights_json(candidate),
             "decision_time_current_weights_json": weights_json(current),
@@ -269,17 +302,44 @@ class RiskAwareGTRCPOStrategy(BaseStrategy):
         estimated_cost: float,
         cvar_loss_5: float,
         drawdown: float,
-    ) -> tuple[float, dict[str, float], dict[str, dict[str, float]], str | None]:
+    ) -> tuple[float, dict[str, float], dict[str, dict[str, float]], str | None, str | None]:
         rho_values = _rho_values(self.config)
         _ = scheduler_allowed
         if first_trade and bool(self._section().get("initial_build_full_rho", True)):
             scores = {f"{float(value):.2f}".rstrip("0").rstrip("."): float(value) for value in rho_values}
-            return 1.0, scores, {}, None
+            return 1.0, scores, {}, None, None
         section = self._section()
         if _uses_learned_rho(section):
             rho = max(0.0, min(1.0, float(agent_action.get("raw_rho", agent_action.get("rho", 0.0)))))
             key = f"{rho:.2f}".rstrip("0").rstrip(".")
-            return rho, {"0": 0.0, key: float(expected_alpha_horizon)}, {}, "model_chosen_hold" if rho == 0.0 else None
+            scores: dict[str, float] = {"0": 0.0, key: float(expected_alpha_horizon)}
+            components: dict[str, dict[str, float]] = {}
+            if (
+                rho == 0.0
+                and bool(scheduler_allowed)
+                and bool(section.get("learned_rho_activity_fallback_enabled", True))
+            ):
+                gate_scoring = _gate_scoring_config(self.config, "ra_gt_rcpo")
+                gate_rho, gate_scores, gate_components = score_rho_normalized(
+                    rho_values=rho_values,
+                    expected_alpha=float(expected_alpha_horizon),
+                    estimated_turnover=float(estimated_turnover),
+                    estimated_cost=float(estimated_cost),
+                    cvar_loss_5=float(cvar_loss_5),
+                    drawdown=float(drawdown),
+                    scale_config=gate_scoring,
+                )
+                if gate_rho > 0.0:
+                    return (
+                        float(gate_rho),
+                        gate_scores,
+                        gate_components,
+                        None,
+                        "normalized_gate_activity_fallback",
+                    )
+                scores = gate_scores
+                components = gate_components
+            return rho, scores, components, "model_chosen_hold" if rho == 0.0 else None, None
         gate_scoring = _gate_scoring_config(self.config, "ra_gt_rcpo")
         if str(gate_scoring.get("mode", "normalized")) == "normalized":
             rho, scores, components = score_rho_normalized(
@@ -291,7 +351,7 @@ class RiskAwareGTRCPOStrategy(BaseStrategy):
                 drawdown=float(drawdown),
                 scale_config=gate_scoring,
             )
-            return rho, scores, components, "model_chosen_hold" if rho == 0.0 else None
+            return rho, scores, components, "model_chosen_hold" if rho == 0.0 else None, None
         rho, scores = choose_rho(
             rho_values=rho_values,
             expected_return=float(expected_return),
@@ -306,7 +366,7 @@ class RiskAwareGTRCPOStrategy(BaseStrategy):
             cvar_loss_budget=float(section.get("cvar_loss_budget", 0.02)),
             drawdown_budget=float(section.get("drawdown_budget", 0.10)),
         )
-        return rho, scores, {}, "model_chosen_hold" if rho == 0.0 else None
+        return rho, scores, {}, "model_chosen_hold" if rho == 0.0 else None, None
 
     def _build_agent_for_current_name(self) -> None:
         model_name = str(self.strategy_name)

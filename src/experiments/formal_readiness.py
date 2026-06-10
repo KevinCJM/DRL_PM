@@ -99,6 +99,7 @@ def audit_formal_readiness(
     rows.extend(_audit_data_freeze(project, data_cutoff_date))
     rows.extend(_audit_configs(project, protocol_id, data_cutoff_date))
     rows.extend(_audit_p12_p13_validation_gate(project))
+    rows.extend(_audit_otar_promotion_gate(project))
     rows.extend(_audit_p16_readiness(project))
     rows.extend(_audit_formal_seed_runs(project, protocol_id))
     rows.extend(_audit_paper_tables(project, protocol_id, data_cutoff_date))
@@ -322,6 +323,28 @@ def _audit_active_hpo_objective_and_constraints(config: Mapping[str, Any], path:
     ]
 
 
+def _check_eta_v_validation_only(config: Mapping[str, Any], path: Path, phase: str) -> dict[str, Any]:
+    hpo = _get(config, "hpo") or {}
+    final_report_split = str(hpo.get("final_report_split") or "test")
+    search_space = hpo.get("search_space") or {}
+    has_eta_v_in_search = "eta_v" in search_space
+    passed = not (final_report_split == "test" and has_eta_v_in_search)
+    return _check(
+        phase,
+        f"eta_v_validation_only:{path.name}",
+        path,
+        passed,
+        detail=json.dumps(
+            {
+                "final_report_split": final_report_split,
+                "eta_v_in_search_space": has_eta_v_in_search,
+                "error": "ERR_TEST_PEEKING_ETA_V" if not passed else "",
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+
 def _audit_hpo_config(path: Path, phase: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     try:
@@ -348,6 +371,7 @@ def _audit_hpo_config(path: Path, phase: str) -> list[dict[str, Any]]:
             detail=f"long_running={config.get('long_running')}, seeds={_get(config, 'reproducibility', 'seeds')}",
         )
     )
+    rows.append(_check_eta_v_validation_only(config, path, phase))
     rows.append(
         _check(
             phase,
@@ -607,6 +631,110 @@ def _p13_formal_required(root: Path) -> bool:
         return False
     p13_rows = report.loc[report["phase"].astype(str).eq("P13")]
     return bool(not p13_rows.empty and p13_rows["promotion_gate_passed"].map(_truthy).any())
+
+
+def _audit_otar_promotion_gate(root: Path) -> list[dict[str, Any]]:
+    paper_tables_dir = root / "outputs/otar_v2_full/OTAR_v2_full/paper_tables"
+    seed_summary_path = paper_tables_dir / "paper_seed_summary.csv"
+    gate_diag_path = paper_tables_dir / "otar_gate_diagnostics.csv"
+
+    if not seed_summary_path.exists():
+        return [_check("otar", "otar_seed_summary_exists", seed_summary_path, False, detail="file not found")]
+
+    seed_summary = _read_csv(seed_summary_path)
+    gate_diag = _read_csv(gate_diag_path) if gate_diag_path.exists() else pd.DataFrame()
+
+    ablation_ids = set()
+    if "paper_model_id" in seed_summary.columns:
+        ablation_ids = set(seed_summary["paper_model_id"].dropna().unique())
+
+    has_a0 = "full_dqn_gated_multitask_cnn_ppo" in ablation_ids or any("a0" in str(x).lower() for x in ablation_ids)
+    has_a3 = any("a3" in str(x).lower() for x in ablation_ids)
+    has_a4 = any("a4" in str(x).lower() for x in ablation_ids)
+
+    rows: list[dict[str, Any]] = []
+
+    rows.append(_check(
+        "otar",
+        "otar_ablation_coverage",
+        seed_summary_path,
+        has_a0 and has_a3,
+        detail=json.dumps({"has_a0": has_a0, "has_a3": has_a3, "has_a4": has_a4}, ensure_ascii=False),
+    ))
+
+    if has_a0 and has_a3 and "metric_name" in seed_summary.columns:
+        a0_metrics = _otar_extract_metrics(seed_summary, "full_dqn_gated_multitask_cnn_ppo")
+        a3_metrics = _otar_extract_metrics(seed_summary, "otar_fixed")
+        if not a3_metrics:
+            a3_metrics = _otar_extract_ablation_metrics(seed_summary, "a3")
+        if not a0_metrics:
+            a0_metrics = _otar_extract_ablation_metrics(seed_summary, "a0")
+
+        if a0_metrics and a3_metrics:
+            gate_result = _otar_promotion_gate_a3_vs_a2(a3_metrics, a0_metrics)
+            rows.append(_check(
+                "otar",
+                "otar_a3_vs_a0_promotion_gate",
+                seed_summary_path,
+                gate_result["passed"],
+                detail=json.dumps({k: round(v, 4) if isinstance(v, float) else v for k, v in gate_result.items()}, ensure_ascii=False),
+            ))
+
+    if has_a4 and has_a3 and "metric_name" in seed_summary.columns:
+        a3_metrics = _otar_extract_metrics(seed_summary, "otar_fixed")
+        a4_metrics = _otar_extract_metrics(seed_summary, "otar_cqr_gate")
+        if not a3_metrics:
+            a3_metrics = _otar_extract_ablation_metrics(seed_summary, "a3")
+        if not a4_metrics:
+            a4_metrics = _otar_extract_ablation_metrics(seed_summary, "a4")
+
+        gate_diag_row: dict[str, Any] = {}
+        if not gate_diag.empty:
+            a4_gate = gate_diag.loc[gate_diag.get("paper_model_id", pd.Series(dtype=str)).astype(str).str.contains("a4", case=False, na=False)]
+            if not a4_gate.empty:
+                gate_diag_row = a4_gate.iloc[0].to_dict()
+
+        if a3_metrics and a4_metrics:
+            gate_result = _otar_promotion_gate_a4_vs_a3(a4_metrics, a3_metrics, gate_diag_row)
+            rows.append(_check(
+                "otar",
+                "otar_a4_vs_a3_promotion_gate",
+                seed_summary_path,
+                gate_result["passed"],
+                detail=json.dumps({k: round(v, 4) if isinstance(v, float) else v for k, v in gate_result.items()}, ensure_ascii=False),
+            ))
+
+    return rows
+
+
+def _otar_extract_metrics(seed_summary: pd.DataFrame, model_id: str) -> dict[str, Any]:
+    if "paper_model_id" not in seed_summary.columns or "metric_name" not in seed_summary.columns:
+        return {}
+    rows = seed_summary.loc[seed_summary["paper_model_id"].astype(str).str.lower() == model_id.lower()]
+    if rows.empty:
+        return {}
+    metrics: dict[str, Any] = {}
+    for _, row in rows.iterrows():
+        metric_name = str(row.get("metric_name", ""))
+        mean_val = row.get("mean")
+        if metric_name and pd.notna(mean_val):
+            metrics[metric_name] = float(mean_val)
+    return metrics
+
+
+def _otar_extract_ablation_metrics(seed_summary: pd.DataFrame, ablation_prefix: str) -> dict[str, Any]:
+    if "paper_model_id" not in seed_summary.columns or "metric_name" not in seed_summary.columns:
+        return {}
+    rows = seed_summary.loc[seed_summary["paper_model_id"].astype(str).str.lower().str.contains(ablation_prefix.lower(), na=False)]
+    if rows.empty:
+        return {}
+    metrics: dict[str, Any] = {}
+    for _, row in rows.iterrows():
+        metric_name = str(row.get("metric_name", ""))
+        mean_val = row.get("mean")
+        if metric_name and pd.notna(mean_val):
+            metrics[metric_name] = float(mean_val)
+    return metrics
 
 
 def _audit_p16_readiness(root: Path) -> list[dict[str, Any]]:
@@ -1317,6 +1445,230 @@ def _get(mapping: Mapping[str, Any], *keys: str) -> Any:
             return None
         current = current.get(key)
     return current
+
+
+_EPSILON = 1.0e-12
+
+
+def Improvement_loss_metric(baseline_value: float, model_value: float) -> float:
+    return (baseline_value - model_value) / (abs(baseline_value) + _EPSILON)
+
+
+def Improvement_return_metric(baseline_value: float, model_value: float) -> float:
+    return (model_value - baseline_value) / (abs(baseline_value) + _EPSILON)
+
+
+def _is_gate_degenerate(gate_action_ratio: float) -> bool:
+    return gate_action_ratio < 0.03 or gate_action_ratio > 0.80
+
+
+def _is_gate_outside_formal_range(gate_action_ratio: float) -> bool:
+    return gate_action_ratio < 0.05 or gate_action_ratio > 0.50
+
+
+def _gate_action_ratio_status(gate_action_ratio: float) -> str:
+    if gate_action_ratio < 0.03:
+        return "degenerate_hold"
+    if gate_action_ratio > 0.80:
+        return "degenerate_rebalance"
+    if gate_action_ratio < 0.05:
+        return "warning_low"
+    if gate_action_ratio > 0.50:
+        return "warning_high"
+    return "formal_range"
+
+
+def _otar_promotion_gate_a3_vs_a2(metrics_a3: Mapping[str, Any], metrics_a2: Mapping[str, Any]) -> dict[str, Any]:
+    cvar95_a2 = float(metrics_a2.get("cvar95_loss", 0.0))
+    cvar95_a3 = float(metrics_a3.get("cvar95_loss", 0.0))
+    cvar95_improvement = Improvement_loss_metric(cvar95_a2, cvar95_a3)
+
+    max_dd_a2 = float(metrics_a2.get("max_drawdown_abs", 0.0))
+    max_dd_a3 = float(metrics_a3.get("max_drawdown_abs", 0.0))
+    max_dd_improvement = Improvement_loss_metric(max_dd_a2, max_dd_a3)
+
+    cum_ret_a2 = float(metrics_a2.get("cumulative_return", 0.0))
+    cum_ret_a3 = float(metrics_a3.get("cumulative_return", 0.0))
+    cum_return_improvement = Improvement_return_metric(cum_ret_a2, cum_ret_a3)
+
+    passed = (cvar95_improvement >= 0.08 or max_dd_improvement >= 0.08) and cum_return_improvement >= -0.08
+
+    return {
+        "passed": passed,
+        "cvar95_improvement": cvar95_improvement,
+        "max_dd_improvement": max_dd_improvement,
+        "cum_return_improvement": cum_return_improvement,
+    }
+
+
+def _otar_promotion_gate_a4_vs_a3(
+    metrics_a4: Mapping[str, Any],
+    metrics_a3: Mapping[str, Any],
+    gate_diagnostics: Mapping[str, Any],
+) -> dict[str, Any]:
+    turnover_a3 = float(metrics_a3.get("average_turnover", metrics_a3.get("turnover", 0.0)))
+    turnover_a4 = float(metrics_a4.get("average_turnover", metrics_a4.get("turnover", 0.0)))
+    turnover_improvement = Improvement_loss_metric(turnover_a3, turnover_a4)
+
+    gate_action_ratio = float(gate_diagnostics.get("gate_action_ratio", 0.5))
+    degenerate = _is_gate_degenerate(gate_action_ratio)
+    outside_formal_range = _is_gate_outside_formal_range(gate_action_ratio)
+    gate_ratio_status = _gate_action_ratio_status(gate_action_ratio)
+
+    cvar95_a3 = float(metrics_a3.get("cvar95_loss", 0.0))
+    cvar95_a4 = float(metrics_a4.get("cvar95_loss", 0.0))
+    cvar95_improvement = Improvement_loss_metric(cvar95_a3, cvar95_a4)
+
+    max_dd_a3 = float(metrics_a3.get("max_drawdown_abs", 0.0))
+    max_dd_a4 = float(metrics_a4.get("max_drawdown_abs", 0.0))
+    max_dd_improvement = Improvement_loss_metric(max_dd_a3, max_dd_a4)
+
+    sharpe_a3 = float(metrics_a3.get("sharpe", 0.0))
+    sharpe_a4 = float(metrics_a4.get("sharpe", 0.0))
+    sharpe_improvement = Improvement_return_metric(sharpe_a3, sharpe_a4)
+
+    effective_ratio = float(gate_diagnostics.get("effective_actor_update_ratio", 0.0))
+    calibration_status = str(gate_diagnostics.get("calibration_status", "unknown"))
+
+    passed = (
+        turnover_improvement >= 0.10
+        and not degenerate
+        and cvar95_improvement >= -0.05
+        and max_dd_improvement >= -0.05
+        and sharpe_improvement >= -0.05
+        and effective_ratio >= 0.20
+        and calibration_status != "failed"
+    )
+
+    return {
+        "passed": passed,
+        "turnover_improvement": turnover_improvement,
+        "gate_action_ratio": gate_action_ratio,
+        "degenerate": degenerate,
+        "outside_formal_range": outside_formal_range,
+        "gate_ratio_status": gate_ratio_status,
+        "cvar95_improvement": cvar95_improvement,
+        "max_dd_improvement": max_dd_improvement,
+        "sharpe_improvement": sharpe_improvement,
+        "effective_actor_update_ratio": effective_ratio,
+        "calibration_status": calibration_status,
+    }
+
+
+def _otar_formal_success_otar_fixed_vs_dqn(
+    metrics_otar: Mapping[str, Any],
+    metrics_dqn: Mapping[str, Any],
+    seed_metrics: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    cvar95_dqn = float(metrics_dqn.get("cvar95_loss", 0.0))
+    cvar95_otar = float(metrics_otar.get("cvar95_loss", 0.0))
+    cvar95_improvement = Improvement_loss_metric(cvar95_dqn, cvar95_otar)
+
+    max_dd_dqn = float(metrics_dqn.get("max_drawdown_abs", 0.0))
+    max_dd_otar = float(metrics_otar.get("max_drawdown_abs", 0.0))
+    max_dd_improvement = Improvement_loss_metric(max_dd_dqn, max_dd_otar)
+
+    sortino_dqn = float(metrics_dqn.get("sortino", 0.0))
+    sortino_otar = float(metrics_otar.get("sortino", 0.0))
+    sortino_improvement = Improvement_return_metric(sortino_dqn, sortino_otar)
+
+    calmar_dqn = float(metrics_dqn.get("calmar", 0.0))
+    calmar_otar = float(metrics_otar.get("calmar", 0.0))
+    calmar_improvement = Improvement_return_metric(calmar_dqn, calmar_otar)
+
+    cum_ret_dqn = float(metrics_dqn.get("cumulative_return", 0.0))
+    cum_ret_otar = float(metrics_otar.get("cumulative_return", 0.0))
+    cum_return_improvement = Improvement_return_metric(cum_ret_dqn, cum_ret_otar)
+
+    turnover_dqn = float(metrics_dqn.get("average_turnover", metrics_dqn.get("turnover", 0.0)))
+    turnover_otar = float(metrics_otar.get("average_turnover", metrics_otar.get("turnover", 0.0)))
+    turnover_improvement = Improvement_loss_metric(turnover_dqn, turnover_otar)
+
+    seed_consistent_count = 0
+    if seed_metrics is not None:
+        for seed_m in seed_metrics:
+            s_cvar95 = Improvement_loss_metric(
+                float(seed_m.get("cvar95_loss_baseline", cvar95_dqn)),
+                float(seed_m.get("cvar95_loss_model", cvar95_otar)),
+            )
+            s_max_dd = Improvement_loss_metric(
+                float(seed_m.get("max_drawdown_abs_baseline", max_dd_dqn)),
+                float(seed_m.get("max_drawdown_abs_model", max_dd_otar)),
+            )
+            if s_cvar95 >= 0.15 or s_max_dd >= 0.15:
+                seed_consistent_count += 1
+    else:
+        if cvar95_improvement >= 0.15 or max_dd_improvement >= 0.15:
+            seed_consistent_count = 1
+
+    passed = (
+        (cvar95_improvement >= 0.15 or max_dd_improvement >= 0.15)
+        and (sortino_improvement >= 0.10 or calmar_improvement >= 0.10)
+        and cum_return_improvement >= -0.05
+        and turnover_improvement >= -0.10
+        and seed_consistent_count >= 3
+    )
+
+    return {
+        "passed": passed,
+        "cvar95_improvement": cvar95_improvement,
+        "max_dd_improvement": max_dd_improvement,
+        "sortino_improvement": sortino_improvement,
+        "calmar_improvement": calmar_improvement,
+        "cum_return_improvement": cum_return_improvement,
+        "turnover_improvement": turnover_improvement,
+        "seed_consistent_count": seed_consistent_count,
+    }
+
+
+def _otar_formal_success_cqr_vs_a3(
+    metrics_cqr: Mapping[str, Any],
+    metrics_a3: Mapping[str, Any],
+    gate_diagnostics: Mapping[str, Any],
+    cal_result: Mapping[str, Any],
+) -> dict[str, Any]:
+    turnover_a3 = float(metrics_a3.get("average_turnover", metrics_a3.get("turnover", 0.0)))
+    turnover_cqr = float(metrics_cqr.get("average_turnover", metrics_cqr.get("turnover", 0.0)))
+    turnover_improvement = Improvement_loss_metric(turnover_a3, turnover_cqr)
+
+    cvar95_a3 = float(metrics_a3.get("cvar95_loss", 0.0))
+    cvar95_cqr = float(metrics_cqr.get("cvar95_loss", 0.0))
+    cvar95_improvement = Improvement_loss_metric(cvar95_a3, cvar95_cqr)
+
+    max_dd_a3 = float(metrics_a3.get("max_drawdown_abs", 0.0))
+    max_dd_cqr = float(metrics_cqr.get("max_drawdown_abs", 0.0))
+    max_dd_improvement = Improvement_loss_metric(max_dd_a3, max_dd_cqr)
+
+    sharpe_a3 = float(metrics_a3.get("sharpe", 0.0))
+    sharpe_cqr = float(metrics_cqr.get("sharpe", 0.0))
+    sharpe_not_below = sharpe_cqr >= sharpe_a3
+
+    gate_action_ratio = float(gate_diagnostics.get("gate_action_ratio", 0.5))
+    degenerate = _is_gate_degenerate(gate_action_ratio)
+
+    calibration_status = str(cal_result.get("calibration_status", "unknown"))
+    tail_coverage_error = float(cal_result.get("tail_coverage_error", 1.0)) if cal_result.get("tail_coverage_error") is not None else 1.0
+
+    passed = (
+        turnover_improvement >= 0.20
+        and (cvar95_improvement >= 0.10 or max_dd_improvement >= 0.10)
+        and sharpe_not_below
+        and not degenerate
+        and calibration_status == "passed"
+        and tail_coverage_error <= 0.03
+    )
+
+    return {
+        "passed": passed,
+        "turnover_improvement": turnover_improvement,
+        "cvar95_improvement": cvar95_improvement,
+        "max_dd_improvement": max_dd_improvement,
+        "sharpe_not_below": sharpe_not_below,
+        "gate_action_ratio": gate_action_ratio,
+        "degenerate": degenerate,
+        "calibration_status": calibration_status,
+        "tail_coverage_error": tail_coverage_error,
+    }
 
 
 def _read_run_manifest(run_dir: Path) -> dict[str, Any]:

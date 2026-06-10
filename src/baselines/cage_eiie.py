@@ -15,6 +15,7 @@ from src.baselines.cage_common import (
     choose_rho,
     compute_expected_alpha_horizon,
     decision_return_features,
+    enforce_activity_turnover_floor,
     estimate_cost,
     estimate_turnover,
     gate_action_index,
@@ -129,6 +130,27 @@ class CageEIIEStrategy(BaseStrategy):
             first_trade=first_trade,
             model_hold_reason=forced_hold_reason,
         )
+        floor_info: dict[str, Any] = {}
+        if int(execution_decision["rebalance_action"]) == 1:
+            candidate, floor_info = enforce_activity_turnover_floor(
+                candidate,
+                current,
+                state.available_mask_at_decision,
+                self.config,
+                rebalance_intensity=float(execution_decision["rho"]),
+                first_trade=first_trade,
+            )
+            if floor_info.get("activity_turnover_floor_applied"):
+                turnover = estimate_turnover(candidate, current)
+                cost = estimate_cost(self.config, turnover)
+                execution_decision = partial_rho_execution_decision(
+                    self.config,
+                    "cage_eiie",
+                    raw_rho=raw_rho,
+                    estimated_turnover=turnover,
+                    first_trade=first_trade,
+                    model_hold_reason=forced_hold_reason,
+                )
         rho = float(execution_decision["rho"])
         action_index = gate_action_index(self.rho_values, rho)
         raw_action_index = gate_action_index(self.rho_values, raw_rho)
@@ -155,6 +177,14 @@ class CageEIIEStrategy(BaseStrategy):
             "rebalance_intensity": float(execution_decision["rebalance_intensity"]),
             "rebalance_turnover_threshold": float(execution_decision["rebalance_turnover_threshold"]),
             "threshold_turnover_estimate": float(execution_decision["threshold_turnover_estimate"]),
+            "activity_turnover_floor_target": float(floor_info.get("activity_turnover_floor_target", 0.0)),
+            "candidate_turnover_before_activity_floor": float(
+                floor_info.get("candidate_turnover_before_activity_floor", turnover)
+            ),
+            "candidate_turnover_after_activity_floor": float(
+                floor_info.get("candidate_turnover_after_activity_floor", turnover)
+            ),
+            "activity_turnover_floor_applied": bool(floor_info.get("activity_turnover_floor_applied", False)),
             "rebalance_values": json.dumps(scores, sort_keys=True, separators=(",", ":")),
             "gate_score_components": json.dumps(score_components, sort_keys=True, separators=(",", ":")),
             "gate_scoring_mode": str(gate_scoring.get("mode", "legacy_raw")),

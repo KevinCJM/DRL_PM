@@ -24,6 +24,7 @@ from src.experiments.run_experiment import (
     _activity_passed_hpo_trials,
     _activity_hpo_trial_hard_fail_enabled,
     _activity_trial_failure_reason,
+    _apply_hpo_final_activity_status,
     _apply_orchestration_metadata,
     _assert_completed_result,
     _attach_single_model_hpo_final_outputs,
@@ -31,6 +32,7 @@ from src.experiments.run_experiment import (
     _config_for_output_snapshot,
     _config_path,
     _create_run_dir,
+    _hpo_final_report_best_trial,
     _hpo_int,
     _hpo_manifest_model_names,
     _hpo_model_final_comparison,
@@ -319,10 +321,9 @@ def _resume_or_run_single(experiment: HPOExperiment, *, dry_run: bool = False) -
     if not complete_trials:
         raise RuntimeError(f"ERR_HPO_NO_COMPLETED_TRIAL: {study_name}")
 
-    activity_passed_trials = _activity_passed_hpo_trials(complete_trials)
-    best_trial = _best_hpo_trial(activity_passed_trials, direction)
+    final_reports = _run_hpo_final_reports(experiment, complete_trials, direction, final_split)
+    best_trial = _hpo_final_report_best_trial(final_reports, complete_trials)
     _write_best_trial_config_snapshot(experiment, best_trial, run_dir)
-    final_reports = _run_hpo_final_reports(experiment, activity_passed_trials, direction, final_split)
     final_result = dict(final_reports["best"]["result"])
     if str(final_result.get("status", "unknown")) != "completed":
         raise RuntimeError(f"ERR_HPO_FINAL_RESULT_NOT_COMPLETED: status={final_result.get('status', 'unknown')}")
@@ -349,6 +350,9 @@ def _resume_or_run_single(experiment: HPOExperiment, *, dry_run: bool = False) -
                     "trial_number": report.get("trial_number"),
                     "validation_value": report.get("validation_value"),
                     "params": report.get("params", {}),
+                    "selection_activity_failure_reason": report.get("selection_activity_failure_reason", ""),
+                    "activity_failure_reason": report.get("activity_failure_reason", ""),
+                    "final_activity_failure_reason": report.get("final_activity_failure_reason", ""),
                     "result": _result_summary(_result_mapping(report.get("result", {}))),
                 }
                 for label, report in final_reports.items()
@@ -378,7 +382,9 @@ def _resume_or_run_single(experiment: HPOExperiment, *, dry_run: bool = False) -
         best_value=best_trial.value,
         trial_count=len(trial_rows),
         selection_split=validation_split,
+        config=config,
     )
+    _apply_hpo_final_activity_status(payload, config)
     _refresh_new_model_artifacts(payload, config)
     _attach_single_model_hpo_final_outputs(payload)
     return payload

@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from src.experiments.tail_calibration import TailCalibrator
 from src.models.risk_aware_graph_transformer import RA_GT_RCPO_MODEL_NAMES
 from src.utils.stats import STATISTICS_SUMMARY_COLUMNS, run_statistical_tests
 from src.utils.logger import save_json_atomic
@@ -172,6 +173,370 @@ DAILY_RETURN_FILE_PRIORITY = {
     "daily_returns.csv": 20,
 }
 
+OTAR_GATE_DIAGNOSTICS_COLUMNS = (
+    "source_run",
+    "paper_model_id",
+    "model_name",
+    "seed",
+    "ablation_id",
+    "gate_action_ratio",
+    "gate_action_hold_count",
+    "gate_action_rebalance_count",
+    "gate_action_entropy",
+    "raw_gate_action_ratio",
+    "raw_model_requested_rebalance_count",
+    "model_chosen_hold_count",
+    "q_value_gap_mean",
+    "q_value_gap_std",
+    "effective_actor_update_ratio",
+    "actor_update_count",
+    "actor_skipped_by_gate_count",
+    "pred_delta_utility_mean",
+    "pred_candidate_mean_return_mean",
+    "pred_hold_mean_return_mean",
+    "pred_candidate_lower_tail_loss_mean",
+    "pred_hold_lower_tail_loss_mean",
+    "pred_candidate_utility_mean",
+    "pred_hold_utility_mean",
+    "gate_margin_mean",
+    "quantile_spread_candidate_mean",
+    "quantile_spread_hold_mean",
+    "predicted_5pct_quantile_executed_mean",
+    "candidate_estimated_cost_mean",
+    "hold_estimated_cost_mean",
+    "gate_replay_hold_count",
+    "gate_replay_rebalance_count",
+    "gate_replay_action_entropy",
+    "realized_gate_action_return",
+    "realized_gate_action_cost",
+    "realized_gate_action_soft_tail_proxy",
+    "calibration_status",
+    "tail_coverage_error",
+    "realized_below_quantile_frequency",
+    "quantile_pinball_loss",
+)
+
+OTAR_TRAINING_STABILITY_COLUMNS = (
+    "source_run",
+    "paper_model_id",
+    "model_name",
+    "seed",
+    "ablation_id",
+    "effective_actor_update_ratio",
+    "actor_update_count",
+    "actor_skipped_by_gate_count",
+    "gate_action_ratio",
+    "gate_action_hold_count",
+    "gate_action_rebalance_count",
+    "gate_action_entropy",
+    "raw_gate_action_ratio",
+    "low_activity_flag",
+)
+
+
+def _collect_daily_diagnostics(run_dirs: Sequence[Path]) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for run_dir in run_dirs:
+        manifest = _manifest(run_dir)
+        metrics_dir = run_dir / "metrics"
+        diag_path = metrics_dir / "baseline_daily_diagnostics.csv"
+        if not diag_path.exists():
+            continue
+        frame = pd.read_csv(diag_path)
+        if frame.empty:
+            continue
+        frame["source_run"] = _source_run(run_dir, manifest)
+        frame["source_experiment"] = manifest.get("experiment_type") or "unknown"
+        frame["source_path"] = str(run_dir)
+        if "paper_model_id" not in frame.columns:
+            frame["paper_model_id"] = _clean_value(manifest.get("model_name")) or _source_run(run_dir, manifest)
+        if "model_name" not in frame.columns:
+            frame["model_name"] = _clean_value(manifest.get("model_name")) or _source_run(run_dir, manifest)
+        if "seed" not in frame.columns:
+            frame["seed"] = manifest.get("seed")
+        if "ablation_id" not in frame.columns:
+            experiment_result = _experiment_result(run_dir)
+            frame["ablation_id"] = _clean_value(experiment_result.get("ablation_id")) or _clean_value(manifest.get("ablation_id"))
+        frames.append(frame)
+    if frames:
+        return pd.concat(frames, ignore_index=True, sort=False)
+    return pd.DataFrame()
+
+
+def _build_otar_gate_diagnostics(runs: Sequence[Path]) -> pd.DataFrame:
+    diag_df = _collect_daily_diagnostics(runs)
+    if diag_df.empty:
+        return pd.DataFrame(columns=OTAR_GATE_DIAGNOSTICS_COLUMNS)
+
+    has_gate = diag_df["executed_gate_action"].notna().any() if "executed_gate_action" in diag_df.columns else False
+    if not has_gate:
+        return pd.DataFrame(columns=OTAR_GATE_DIAGNOSTICS_COLUMNS)
+
+    group_cols = [col for col in ("source_run", "paper_model_id", "model_name", "seed", "ablation_id") if col in diag_df.columns]
+    if not group_cols:
+        return pd.DataFrame(columns=OTAR_GATE_DIAGNOSTICS_COLUMNS)
+
+    calibrator = TailCalibrator()
+    rows: list[dict[str, Any]] = []
+    for group_key, group in diag_df.groupby(group_cols, dropna=False, sort=False):
+        key_values = group_key if isinstance(group_key, tuple) else (group_key,)
+        row = dict(zip(group_cols, key_values, strict=False))
+
+        gate_actions = pd.to_numeric(group.get("executed_gate_action"), errors="coerce").fillna(0).astype(int)
+        total = len(gate_actions)
+        rebalance_count = int((gate_actions == 1).sum())
+        hold_count = int((gate_actions == 0).sum())
+        row["gate_action_ratio"] = float(rebalance_count / max(total, 1))
+        row["gate_action_hold_count"] = hold_count
+        row["gate_action_rebalance_count"] = rebalance_count
+
+        if total > 0:
+            p_rebalance = rebalance_count / total
+            p_hold = hold_count / total
+            entropy = 0.0
+            if p_rebalance > 0:
+                entropy -= p_rebalance * np.log(p_rebalance)
+            if p_hold > 0:
+                entropy -= p_hold * np.log(p_hold)
+            row["gate_action_entropy"] = float(entropy)
+        else:
+            row["gate_action_entropy"] = 0.0
+
+        if "raw_gate_action" in group.columns:
+            raw_actions = pd.to_numeric(group["raw_gate_action"], errors="coerce").fillna(0)
+            row["raw_gate_action_ratio"] = float(raw_actions.mean())
+        else:
+            row["raw_gate_action_ratio"] = pd.NA
+
+        # Raw model requested rebalance count and model chosen hold count
+        if "raw_model_requested_rebalance" in group.columns:
+            raw_req = pd.to_numeric(group["raw_model_requested_rebalance"], errors="coerce").fillna(0)
+            row["raw_model_requested_rebalance_count"] = int((raw_req > 0.5).sum())
+        else:
+            row["raw_model_requested_rebalance_count"] = pd.NA
+
+        if "model_chosen_hold" in group.columns:
+            chosen_hold = pd.to_numeric(group["model_chosen_hold"], errors="coerce").fillna(0)
+            row["model_chosen_hold_count"] = int((chosen_hold > 0.5).sum())
+        else:
+            row["model_chosen_hold_count"] = pd.NA
+
+        for col in ("pred_delta_utility", "pred_candidate_mean_return", "pred_hold_mean_return",
+                     "pred_candidate_lower_tail_loss", "pred_hold_lower_tail_loss",
+                     "pred_candidate_utility", "pred_hold_utility", "gate_margin",
+                     "quantile_spread_candidate", "quantile_spread_hold",
+                     "predicted_5pct_quantile_executed",
+                     "candidate_estimated_cost", "hold_estimated_cost"):
+            if col in group.columns:
+                values = pd.to_numeric(group[col], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+                row[f"{col}_mean"] = float(values.mean()) if not values.empty else pd.NA
+            else:
+                row[f"{col}_mean"] = pd.NA
+
+        if "pred_delta_utility" in group.columns:
+            gap_values = pd.to_numeric(group["pred_delta_utility"], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+            row["q_value_gap_mean"] = float(gap_values.mean()) if not gap_values.empty else pd.NA
+            row["q_value_gap_std"] = float(gap_values.std()) if len(gap_values) > 1 else pd.NA
+        else:
+            row["q_value_gap_mean"] = pd.NA
+            row["q_value_gap_std"] = pd.NA
+
+        if "effective_actor_update_ratio" in group.columns:
+            values = pd.to_numeric(group["effective_actor_update_ratio"], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+            row["effective_actor_update_ratio"] = float(values.mean()) if not values.empty else pd.NA
+        else:
+            row["effective_actor_update_ratio"] = pd.NA
+
+        if "actor_update_count" in group.columns:
+            row["actor_update_count"] = int(pd.to_numeric(group["actor_update_count"], errors="coerce").fillna(0).sum())
+        else:
+            row["actor_update_count"] = pd.NA
+
+        if "actor_skipped_by_gate_count" in group.columns:
+            row["actor_skipped_by_gate_count"] = int(pd.to_numeric(group["actor_skipped_by_gate_count"], errors="coerce").fillna(0).sum())
+        else:
+            row["actor_skipped_by_gate_count"] = pd.NA
+
+        # Gate replay diagnostics
+        if "gate_action" in group.columns:
+            ga = pd.to_numeric(group["gate_action"], errors="coerce").fillna(0).astype(int)
+            row["gate_replay_hold_count"] = int((ga == 0).sum())
+            row["gate_replay_rebalance_count"] = int((ga == 1).sum())
+            ga_total = len(ga)
+            if ga_total > 0:
+                p_r = (ga == 1).sum() / ga_total
+                p_h = (ga == 0).sum() / ga_total
+                ent = 0.0
+                if p_r > 0:
+                    ent -= p_r * np.log(p_r)
+                if p_h > 0:
+                    ent -= p_h * np.log(p_h)
+                row["gate_replay_action_entropy"] = float(ent)
+            else:
+                row["gate_replay_action_entropy"] = 0.0
+        else:
+            row["gate_replay_hold_count"] = pd.NA
+            row["gate_replay_rebalance_count"] = pd.NA
+            row["gate_replay_action_entropy"] = pd.NA
+
+        # Realized gate action diagnostics
+        for col in ("realized_gate_action_cost", "realized_gate_action_soft_tail_proxy"):
+            if col in group.columns:
+                values = pd.to_numeric(group[col], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+                row[col] = float(values.mean()) if not values.empty else pd.NA
+            else:
+                row[col] = pd.NA
+        if "realized_gate_action_return" not in group.columns and "realized_gross_simple_return_t" in group.columns:
+            values = pd.to_numeric(group["realized_gross_simple_return_t"], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+            row["realized_gate_action_return"] = float(values.mean()) if not values.empty else pd.NA
+        elif "realized_gate_action_return" in group.columns:
+            values = pd.to_numeric(group["realized_gate_action_return"], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+            row["realized_gate_action_return"] = float(values.mean()) if not values.empty else pd.NA
+        else:
+            row["realized_gate_action_return"] = pd.NA
+
+        # Tail calibration via TailCalibrator
+        cal_result = calibrator.calibrate(group)
+        row["calibration_status"] = cal_result.get("calibration_status", "invalid")
+        row["tail_coverage_error"] = cal_result.get("tail_coverage_error")
+        row["realized_below_quantile_frequency"] = cal_result.get("realized_below_quantile_frequency")
+        row["quantile_pinball_loss"] = cal_result.get("quantile_pinball_loss")
+
+        rows.append(row)
+
+    if not rows:
+        return pd.DataFrame(columns=OTAR_GATE_DIAGNOSTICS_COLUMNS)
+
+    result = pd.DataFrame(rows)
+    for col in OTAR_GATE_DIAGNOSTICS_COLUMNS:
+        if col not in result.columns:
+            result[col] = pd.NA
+    return result.loc[:, OTAR_GATE_DIAGNOSTICS_COLUMNS]
+
+
+def _build_otar_tail_calibration(runs: Sequence[Path]) -> pd.DataFrame:
+    diag_df = _collect_daily_diagnostics(runs)
+    if diag_df.empty:
+        return pd.DataFrame(columns=["source_run", "paper_model_id", "model_name", "seed", "ablation_id",
+                                      "calibration_status", "rebalance_count", "hold_count",
+                                      "tail_coverage_error", "realized_below_quantile_frequency",
+                                      "quantile_pinball_loss"])
+
+    has_gate = "executed_gate_action" in diag_df.columns and diag_df["executed_gate_action"].notna().any()
+    if not has_gate:
+        return pd.DataFrame(columns=["source_run", "paper_model_id", "model_name", "seed", "ablation_id",
+                                      "calibration_status", "rebalance_count", "hold_count",
+                                      "tail_coverage_error", "realized_below_quantile_frequency",
+                                      "quantile_pinball_loss"])
+
+    group_cols = [col for col in ("source_run", "paper_model_id", "model_name", "seed", "ablation_id") if col in diag_df.columns]
+    if not group_cols:
+        return pd.DataFrame(columns=["source_run", "paper_model_id", "model_name", "seed", "ablation_id",
+                                      "calibration_status", "rebalance_count", "hold_count",
+                                      "tail_coverage_error", "realized_below_quantile_frequency",
+                                      "quantile_pinball_loss"])
+
+    calibrator = TailCalibrator()
+    rows: list[dict[str, Any]] = []
+    for group_key, group in diag_df.groupby(group_cols, dropna=False, sort=False):
+        key_values = group_key if isinstance(group_key, tuple) else (group_key,)
+        row = dict(zip(group_cols, key_values, strict=False))
+
+        cal_result = calibrator.calibrate(group)
+        row["calibration_status"] = cal_result.get("calibration_status", "invalid")
+        row["rebalance_count"] = cal_result.get("rebalance_count", 0)
+        row["hold_count"] = cal_result.get("hold_count", 0)
+        row["tail_coverage_error"] = cal_result.get("tail_coverage_error")
+        row["realized_below_quantile_frequency"] = cal_result.get("realized_below_quantile_frequency")
+        row["quantile_pinball_loss"] = cal_result.get("quantile_pinball_loss")
+        rows.append(row)
+
+    if not rows:
+        return pd.DataFrame(columns=["source_run", "paper_model_id", "model_name", "seed", "ablation_id",
+                                      "calibration_status", "rebalance_count", "hold_count",
+                                      "tail_coverage_error", "realized_below_quantile_frequency",
+                                      "quantile_pinball_loss"])
+
+    return pd.DataFrame(rows)
+
+
+def _build_otar_training_stability(runs: Sequence[Path]) -> pd.DataFrame:
+    diag_df = _collect_daily_diagnostics(runs)
+    if diag_df.empty:
+        return pd.DataFrame(columns=OTAR_TRAINING_STABILITY_COLUMNS)
+
+    has_gate = "executed_gate_action" in diag_df.columns and diag_df["executed_gate_action"].notna().any()
+    if not has_gate:
+        return pd.DataFrame(columns=OTAR_TRAINING_STABILITY_COLUMNS)
+
+    group_cols = [col for col in ("source_run", "paper_model_id", "model_name", "seed", "ablation_id") if col in diag_df.columns]
+    if not group_cols:
+        return pd.DataFrame(columns=OTAR_TRAINING_STABILITY_COLUMNS)
+
+    rows: list[dict[str, Any]] = []
+    for group_key, group in diag_df.groupby(group_cols, dropna=False, sort=False):
+        key_values = group_key if isinstance(group_key, tuple) else (group_key,)
+        row = dict(zip(group_cols, key_values, strict=False))
+
+        if "effective_actor_update_ratio" in group.columns:
+            values = pd.to_numeric(group["effective_actor_update_ratio"], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+            row["effective_actor_update_ratio"] = float(values.mean()) if not values.empty else pd.NA
+        else:
+            row["effective_actor_update_ratio"] = pd.NA
+
+        if "actor_update_count" in group.columns:
+            row["actor_update_count"] = int(pd.to_numeric(group["actor_update_count"], errors="coerce").fillna(0).sum())
+        else:
+            row["actor_update_count"] = pd.NA
+
+        if "actor_skipped_by_gate_count" in group.columns:
+            row["actor_skipped_by_gate_count"] = int(pd.to_numeric(group["actor_skipped_by_gate_count"], errors="coerce").fillna(0).sum())
+        else:
+            row["actor_skipped_by_gate_count"] = pd.NA
+
+        gate_actions = pd.to_numeric(group.get("executed_gate_action"), errors="coerce").fillna(0).astype(int)
+        total = len(gate_actions)
+        rebalance_count = int((gate_actions == 1).sum())
+        hold_count = int((gate_actions == 0).sum())
+        row["gate_action_ratio"] = float(rebalance_count / max(total, 1))
+        row["gate_action_hold_count"] = hold_count
+        row["gate_action_rebalance_count"] = rebalance_count
+
+        if total > 0:
+            p_rebalance = rebalance_count / total
+            p_hold = hold_count / total
+            entropy = 0.0
+            if p_rebalance > 0:
+                entropy -= p_rebalance * np.log(p_rebalance)
+            if p_hold > 0:
+                entropy -= p_hold * np.log(p_hold)
+            row["gate_action_entropy"] = float(entropy)
+        else:
+            row["gate_action_entropy"] = 0.0
+
+        if "raw_gate_action" in group.columns:
+            raw_actions = pd.to_numeric(group["raw_gate_action"], errors="coerce").fillna(0)
+            row["raw_gate_action_ratio"] = float(raw_actions.mean())
+        else:
+            row["raw_gate_action_ratio"] = pd.NA
+
+        ratio = row.get("effective_actor_update_ratio")
+        if ratio is not None and not pd.isna(ratio):
+            row["low_activity_flag"] = bool(float(ratio) < 0.10)
+        else:
+            row["low_activity_flag"] = pd.NA
+
+        rows.append(row)
+
+    if not rows:
+        return pd.DataFrame(columns=OTAR_TRAINING_STABILITY_COLUMNS)
+
+    result = pd.DataFrame(rows)
+    for col in OTAR_TRAINING_STABILITY_COLUMNS:
+        if col not in result.columns:
+            result[col] = pd.NA
+    return result.loc[:, OTAR_TRAINING_STABILITY_COLUMNS]
+
 
 def aggregate_paper_results(
     run_dirs: Sequence[str | Path],
@@ -224,6 +589,9 @@ def aggregate_paper_results(
     turnover_activity = _paper_turnover_activity_summary(paper_main)
     closest_hybrid = _closest_hybrid_figure_source(paper_main, seed_summary)
     dedup_report = _paper_aggregate_dedup_report(comparison, daily_returns, paper_main)
+    otar_gate_diag = _build_otar_gate_diagnostics(runs)
+    otar_tail_cal = _build_otar_tail_calibration(runs)
+    otar_train_stability = _build_otar_training_stability(runs)
 
     outputs = {
         "paper_main_comparison": target / "paper_main_comparison.csv",
@@ -236,6 +604,9 @@ def aggregate_paper_results(
         "source_run_dirs": target / "source_run_dirs.txt",
         "diagnostic_status": target / "diagnostic_status.json",
         "paper_aggregate_manifest": target / "paper_aggregate_manifest.json",
+        "otar_gate_diagnostics": target / "otar_gate_diagnostics.csv",
+        "otar_tail_calibration": target / "otar_tail_calibration.csv",
+        "otar_training_stability": target / "otar_training_stability.csv",
     }
     _write_csv(paper_main, outputs["paper_main_comparison"])
     _write_csv(paper_diagnostic, outputs["paper_diagnostic_comparison"])
@@ -244,6 +615,9 @@ def aggregate_paper_results(
     _write_csv(turnover_activity, outputs["paper_turnover_activity_summary"])
     _write_csv(closest_hybrid, outputs["closest_hybrid_figure_source"])
     _write_csv(dedup_report, outputs["paper_aggregate_dedup_report"])
+    _write_csv(otar_gate_diag, outputs["otar_gate_diagnostics"])
+    _write_csv(otar_tail_cal, outputs["otar_tail_calibration"])
+    _write_csv(otar_train_stability, outputs["otar_training_stability"])
     _write_source_run_dirs(runs, outputs["source_run_dirs"])
     save_json_atomic(
         _diagnostic_status_payload(paper_main, paper_diagnostic, paired, formal_filter),

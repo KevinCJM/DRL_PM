@@ -14,7 +14,8 @@ from src.data.leakage_checks import assert_decision_visibility_contract
 from src.data.loader import DataContractError, MarketDatasetBundle
 from src.envs.portfolio_execution_core import PortfolioExecutionCore
 from src.envs.rebalance_scheduler import RebalanceScheduler
-from src.envs.reward_calculator import RewardCalculator
+from src.envs.reward_calculator import RewardCalculator, resolve_training_warmup_v_init
+from src.envs.risk_state_manager import RiskStateManager
 from src.envs.state import DecisionMarketState, PendingAction, PortfolioAction, PortfolioState
 
 
@@ -133,6 +134,7 @@ class BacktestResult:
     run_manifest: dict[str, Any]
     portfolio_state: PortfolioState
     baseline_daily_diagnostics: pd.DataFrame = field(default_factory=pd.DataFrame)
+    daily_asset_returns: pd.DataFrame = field(default_factory=pd.DataFrame)
     artifact_paths: dict[str, Path] = field(default_factory=dict)
 
 
@@ -209,17 +211,31 @@ class BacktestEngine:
         if hasattr(strategy, "reset"):
             strategy.reset()
         scheduler.reset()
+        v_init_resolved_value = resolve_training_warmup_v_init(
+            self.reward_calculator,
+            dataset,
+            split,
+            self.config,
+        )
         self.reward_calculator.reset_episode()
         record_metadata = _record_metadata(segment, split, strategy, self.config)
 
         portfolio_state = self._initial_portfolio_state(asset_ids, decision_dates[0])
+        risk_state_manager = RiskStateManager(self.config) if _backtest_risk_state_required(self.config) else None
+        if risk_state_manager is not None:
+            risk_state_manager.reset()
+            portfolio_state.risk_state_vector = risk_state_manager.get_observation_vector()
         daily_returns: list[dict[str, Any]] = []
         daily_weights: list[dict[str, Any]] = []
         daily_turnover: list[dict[str, Any]] = []
         daily_rebalance: list[dict[str, Any]] = []
         daily_costs: list[dict[str, Any]] = []
         daily_diagnostics: list[dict[str, Any]] = []
+        daily_asset_returns: list[dict[str, Any]] = []
         first_trade = True
+        boundary_timestep = 0
+        run_id = record_metadata.get("run_id", record_metadata.get("model_name", "unknown"))
+        episode_id = f"{run_id}:{segment}"
 
         for decision_date in decision_dates:
             decision_state = _build_decision_market_state(
@@ -248,6 +264,7 @@ class BacktestEngine:
             )
             final_action = action.rebalance_action
 
+            pre_step_previous_executed_weights = portfolio_state.previous_executed_weights.copy() if portfolio_state.previous_executed_weights is not None else None
             execution_state = self.execution_core.build_execution_market_state(dataset, decision_date)
             execution_result = self._execute_step(
                 portfolio_state,
@@ -257,7 +274,26 @@ class BacktestEngine:
                 first_trade,
                 asset_ids,
             )
-            reward, reward_info = self.reward_calculator.calculate(execution_result, portfolio_state)
+            reward_context: dict[str, Any] = {}
+            if risk_state_manager is not None:
+                risk_state_manager.update_pre_reward(execution_result, portfolio_state, final_action)
+                reward_context["drawdown_increment_t"] = risk_state_manager.drawdown_increment
+            reward, reward_info = self.reward_calculator.calculate(
+                execution_result,
+                portfolio_state,
+                reward_context=reward_context,
+            )
+            if risk_state_manager is not None:
+                risk_state_manager.update_reward_info(reward_info)
+                portfolio_state.risk_state_vector = risk_state_manager.get_observation_vector()
+            boundary = {
+                "run_id": run_id,
+                "episode_id": episode_id,
+                "timestep": boundary_timestep,
+                "done_t": False,
+                "split": segment,
+                "termination_reason": "",
+            }
             record_context = {
                 "action": action,
                 "execution_result": execution_result,
@@ -266,6 +302,8 @@ class BacktestEngine:
                 "reward": reward,
                 "reward_info": reward_info,
                 "metadata": record_metadata,
+                "boundary": boundary,
+                "pre_step_previous_executed_weights": pre_step_previous_executed_weights,
             }
             daily_returns.append(_daily_returns_record(record_context))
             daily_turnover.append(_daily_turnover_record(record_context, final_action))
@@ -273,6 +311,9 @@ class BacktestEngine:
             daily_costs.append(_daily_costs_record(record_context))
             if _should_record_daily_diagnostics(action, self.execution_activity_config):
                 daily_diagnostics.append(_baseline_diagnostics_record(record_context))
+            daily_asset_returns.extend(
+                _daily_asset_returns_records(record_context, asset_ids, boundary, record_metadata)
+            )
             daily_weights.extend(
                 _daily_weights_records(
                     execution_state.next_valuation_date,
@@ -282,6 +323,11 @@ class BacktestEngine:
                 )
             )
             first_trade = False
+            boundary_timestep += 1
+
+        if daily_diagnostics:
+            daily_diagnostics[-1]["done_t"] = True
+            daily_diagnostics[-1]["termination_reason"] = "segment_end"
 
         result = BacktestResult(
             daily_returns=pd.DataFrame(daily_returns, columns=DAILY_RETURNS_COLUMNS),
@@ -290,10 +336,12 @@ class BacktestEngine:
             daily_rebalance=pd.DataFrame(daily_rebalance, columns=DAILY_REBALANCE_COLUMNS),
             daily_costs=pd.DataFrame(daily_costs, columns=DAILY_COSTS_COLUMNS),
             baseline_daily_diagnostics=pd.DataFrame(daily_diagnostics),
+            daily_asset_returns=pd.DataFrame(daily_asset_returns),
             metrics=_metrics(daily_returns, daily_turnover, daily_costs, daily_diagnostics),
             run_manifest=self._run_manifest(dataset),
             portfolio_state=portfolio_state,
         )
+        result.run_manifest["v_init_resolved_value"] = float(v_init_resolved_value)
         if output_dir is not None:
             result = _write_outputs(result, output_dir)
         return result
@@ -324,11 +372,21 @@ class BacktestEngine:
         if hasattr(strategy, "reset"):
             strategy.reset()
         scheduler.reset()
+        v_init_resolved_value = resolve_training_warmup_v_init(
+            self.reward_calculator,
+            dataset,
+            split,
+            self.config,
+        )
         self.reward_calculator.reset_episode()
         self._pending_truncation_count = 0
         record_metadata = _record_metadata(segment, split, strategy, self.config)
 
         portfolio_state = self._initial_portfolio_state(asset_ids, segment_dates[0])
+        risk_state_manager = RiskStateManager(self.config) if _backtest_risk_state_required(self.config) else None
+        if risk_state_manager is not None:
+            risk_state_manager.reset()
+            portfolio_state.risk_state_vector = risk_state_manager.get_observation_vector()
         pending_queue = PendingActionQueue()
         daily_returns: list[dict[str, Any]] = []
         daily_weights: list[dict[str, Any]] = []
@@ -336,7 +394,11 @@ class BacktestEngine:
         daily_rebalance: list[dict[str, Any]] = []
         daily_costs: list[dict[str, Any]] = []
         daily_diagnostics: list[dict[str, Any]] = []
+        daily_asset_returns: list[dict[str, Any]] = []
         first_trade = True
+        boundary_timestep = 0
+        run_id = record_metadata.get("run_id", record_metadata.get("model_name", "unknown"))
+        episode_id = f"{run_id}:{segment}"
 
         for current_date in segment_dates:
             for pending_action in pending_queue.pop_ready(current_date):
@@ -345,6 +407,7 @@ class BacktestEngine:
                     pending_action=pending_action,
                 )
                 action = _action_from_pending(pending_action)
+                pre_step_previous_executed_weights = portfolio_state.previous_executed_weights.copy() if portfolio_state.previous_executed_weights is not None else None
                 execution_result = self._execute_step(
                     portfolio_state,
                     action,
@@ -353,7 +416,26 @@ class BacktestEngine:
                     first_trade,
                     asset_ids,
                 )
-                reward, reward_info = self.reward_calculator.calculate(execution_result, portfolio_state)
+                reward_context: dict[str, Any] = {}
+                if risk_state_manager is not None:
+                    risk_state_manager.update_pre_reward(execution_result, portfolio_state, pending_action.rebalance_action)
+                    reward_context["drawdown_increment_t"] = risk_state_manager.drawdown_increment
+                reward, reward_info = self.reward_calculator.calculate(
+                    execution_result,
+                    portfolio_state,
+                    reward_context=reward_context,
+                )
+                if risk_state_manager is not None:
+                    risk_state_manager.update_reward_info(reward_info)
+                    portfolio_state.risk_state_vector = risk_state_manager.get_observation_vector()
+                boundary = {
+                    "run_id": run_id,
+                    "episode_id": episode_id,
+                    "timestep": boundary_timestep,
+                    "done_t": False,
+                    "split": segment,
+                    "termination_reason": "",
+                }
                 record_context = {
                     "action": action,
                     "execution_result": execution_result,
@@ -362,6 +444,8 @@ class BacktestEngine:
                     "reward": reward,
                     "reward_info": reward_info,
                     "metadata": record_metadata,
+                    "boundary": boundary,
+                    "pre_step_previous_executed_weights": pre_step_previous_executed_weights,
                 }
                 daily_returns.append(_daily_returns_record(record_context))
                 daily_turnover.append(_daily_turnover_record(record_context, pending_action.rebalance_action))
@@ -369,6 +453,9 @@ class BacktestEngine:
                 daily_costs.append(_daily_costs_record(record_context))
                 if _should_record_daily_diagnostics(action, self.execution_activity_config):
                     daily_diagnostics.append(_baseline_diagnostics_record(record_context))
+                daily_asset_returns.extend(
+                    _daily_asset_returns_records(record_context, asset_ids, boundary, record_metadata)
+                )
                 daily_weights.extend(
                     _daily_weights_records(
                         execution_state.next_valuation_date,
@@ -378,6 +465,7 @@ class BacktestEngine:
                     )
                 )
                 first_trade = False
+                boundary_timestep += 1
 
             if current_date < portfolio_state.date or current_date not in decision_date_set or len(pending_queue) > 0:
                 continue
@@ -424,6 +512,13 @@ class BacktestEngine:
             self._pending_truncation_count += len(pending_queue)
             pending_queue.clear()
 
+        if daily_diagnostics:
+            daily_diagnostics[-1]["done_t"] = True
+            if self._pending_truncation_count > 0:
+                daily_diagnostics[-1]["termination_reason"] = "pending_truncation"
+            else:
+                daily_diagnostics[-1]["termination_reason"] = "segment_end"
+
         result = BacktestResult(
             daily_returns=pd.DataFrame(daily_returns, columns=DAILY_RETURNS_COLUMNS),
             daily_weights=pd.DataFrame(daily_weights, columns=DAILY_WEIGHTS_COLUMNS),
@@ -431,10 +526,12 @@ class BacktestEngine:
             daily_rebalance=pd.DataFrame(daily_rebalance, columns=DAILY_REBALANCE_COLUMNS),
             daily_costs=pd.DataFrame(daily_costs, columns=DAILY_COSTS_COLUMNS),
             baseline_daily_diagnostics=pd.DataFrame(daily_diagnostics),
+            daily_asset_returns=pd.DataFrame(daily_asset_returns),
             metrics=_metrics(daily_returns, daily_turnover, daily_costs, daily_diagnostics),
             run_manifest=self._run_manifest(dataset),
             portfolio_state=portfolio_state,
         )
+        result.run_manifest["v_init_resolved_value"] = float(v_init_resolved_value)
         if output_dir is not None:
             result = _write_outputs(result, output_dir)
         return result
@@ -536,6 +633,7 @@ class BacktestEngine:
             "amount_is_proxy": bool(dataset.data_manifest.get("amount_is_proxy", False)),
             "initial_build_cost": bool(self.execution_config.get("initial_build_cost", True)),
             "execution_activity": deepcopy(self.execution_activity_config),
+            "v_init_resolved_value": float(self.reward_calculator.v_init_resolved_value),
         }
         if self._pending_truncation_count:
             manifest["pending_action_truncation_count"] = int(self._pending_truncation_count)
@@ -866,6 +964,19 @@ def _requires_daily_diagnostics(strategy: Any) -> bool:
     )
 
 
+def _backtest_risk_state_required(config: Mapping[str, Any]) -> bool:
+    model_config = config.get("model")
+    reward_config = config.get("reward")
+    risk_config = config.get("risk_state")
+    model_requires = bool(isinstance(model_config, Mapping) and model_config.get("use_risk_state", False))
+    reward_requires = bool(
+        isinstance(reward_config, Mapping)
+        and str(reward_config.get("mode", "")) == "A13_otar_soft_ru_cvar_fixed"
+    )
+    risk_enabled = bool(isinstance(risk_config, Mapping) and risk_config.get("enabled", False))
+    return model_requires or reward_requires or risk_enabled
+
+
 def _mark_scheduler_rebalanced(scheduler: RebalanceScheduler, date: pd.Timestamp) -> None:
     scheduler._last_allowed_date = pd.Timestamp(date)
     scheduler._has_rebalanced = True
@@ -1111,6 +1222,30 @@ def _baseline_diagnostics_record(context: Mapping[str, Any]) -> dict[str, Any]:
     state = context["execution_state"]
     metadata = context["metadata"]
     action_info = dict(action.action_info)
+    boundary = context.get("boundary", {})
+    reward_info = context.get("reward_info", {})
+    pre_step_prev_weights = context.get("pre_step_previous_executed_weights")
+
+    passive_weight_drift_l1 = 0.0
+    if pre_step_prev_weights is not None:
+        passive_weight_drift_l1 = float(np.sum(np.abs(result.pre_execution_drifted_weights - pre_step_prev_weights)))
+    turnover_from_active_rebalance = float(np.sum(np.abs(result.executed_weights - result.pre_execution_drifted_weights)))
+
+    pre_execution_return = float(result.pre_execution_return) if hasattr(result, "pre_execution_return") else 0.0
+    realized_gross_simple_return = float(result.gross_return) if hasattr(result, "gross_return") else 0.0
+    realized_gate_action_cost = float(result.total_transaction_cost)
+    soft_tail_proxy = float(reward_info.get("realized_gate_action_soft_tail_proxy", 0.0))
+
+    executed_gate_action = int(action_info.get("executed_gate_action", context.get("final_action", action.rebalance_action)))
+    if executed_gate_action == 0:
+        estimated_cost = float(action_info.get("hold_estimated_cost", 0.0))
+    else:
+        estimated_cost = float(action_info.get("candidate_estimated_cost", action_info.get("estimated_cost", 0.0)))
+    cost_estimation_error = abs(estimated_cost - realized_gate_action_cost)
+
+    v_t_pre = float(reward_info.get("soft_cvar_v_t_pre_update", 0.0))
+    v_t_post = float(reward_info.get("soft_cvar_v_t_post_update", 0.0))
+
     return {
         **action_info,
         "date": state.next_valuation_date,
@@ -1136,12 +1271,72 @@ def _baseline_diagnostics_record(context: Mapping[str, Any]) -> dict[str, Any]:
         "net_return": result.net_return,
         "portfolio_log_return": result.portfolio_log_return,
         "nav": result.nav_next,
+        # Weight drift
+        "pre_trade_drifted_weights_json": _weights_json(result.pre_execution_drifted_weights),
+        "post_trade_target_weights_json": _weights_json(action.target_weights),
+        "passive_weight_drift_l1_t": passive_weight_drift_l1,
+        "turnover_from_active_rebalance_t": turnover_from_active_rebalance,
+        # Post-step realized
+        "actual_pre_execution_return_t": pre_execution_return,
+        "realized_gross_simple_return_t": realized_gross_simple_return,
+        "realized_gate_action_cost": realized_gate_action_cost,
+        "realized_gate_action_soft_tail_proxy": soft_tail_proxy,
+        "cost_estimation_error_t": cost_estimation_error,
+        # v_t series
+        "soft_cvar_v_t_pre_update": v_t_pre,
+        "soft_cvar_v_t_post_update": v_t_post,
+        # Boundary
+        "run_id": boundary.get("run_id", ""),
+        "episode_id": boundary.get("episode_id", ""),
+        "timestep": boundary.get("timestep", 0),
+        "done_t": boundary.get("done_t", False),
+        "split": boundary.get("split", metadata.get("split", "")),
+        "termination_reason": boundary.get("termination_reason", ""),
     }
 
 
 def _weights_json(weights: Any) -> str:
     array = np.asarray(weights, dtype=float).reshape(-1)
     return json.dumps([float(value) for value in array], separators=(",", ":"))
+
+
+def _daily_asset_returns_records(
+    context: Mapping[str, Any],
+    asset_ids: Sequence[str],
+    boundary: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    result = context["execution_result"]
+    state = context["execution_state"]
+    info = result.info
+    pre_returns = info.get("pre_execution_asset_simple_return", [])
+    post_returns = info.get("post_execution_asset_simple_return", [])
+    if not pre_returns or not post_returns:
+        return []
+    records: list[dict[str, Any]] = []
+    for idx, asset_id in enumerate(asset_ids):
+        pre_ret = float(pre_returns[idx]) if idx < len(pre_returns) else 0.0
+        post_ret = float(post_returns[idx]) if idx < len(post_returns) else 0.0
+        decision_to_next = (1.0 + pre_ret) * (1.0 + post_ret) - 1.0
+        records.append({
+            "run_id": boundary.get("run_id", ""),
+            "episode_id": boundary.get("episode_id", ""),
+            "timestep": boundary.get("timestep", 0),
+            "date": state.next_valuation_date,
+            "decision_date": state.decision_date,
+            "execution_date": state.execution_date,
+            "next_valuation_date": state.next_valuation_date,
+            "split": boundary.get("split", metadata.get("split", "")),
+            "seed": metadata.get("seed", 0),
+            "fold_id": metadata.get("fold_id", 0),
+            "model_name": metadata.get("model_name", ""),
+            "asset_index": idx,
+            "asset_id": str(asset_id),
+            "pre_execution_simple_return": pre_ret,
+            "post_execution_simple_return": post_ret,
+            "decision_to_next_simple_return": decision_to_next,
+        })
+    return records
 
 
 def _has_paper_model_id(value: Any) -> bool:
@@ -1210,7 +1405,12 @@ def _record_metadata(
     strategy: Any,
     config: Mapping[str, Any],
 ) -> dict[str, Any]:
+    output_config = config.get("output")
+    run_id = None
+    if isinstance(output_config, Mapping):
+        run_id = output_config.get("run_name")
     return {
+        "run_id": str(run_id or _model_name(strategy)),
         "split": str(segment),
         "seed": _seed(config),
         "fold_id": getattr(split, "fold_id", None),
@@ -1250,8 +1450,57 @@ def _metrics(
         "total_transaction_cost": total_cost,
         "average_turnover": avg_turnover,
     }
+    metrics.update(_risk_metrics(daily_returns))
     metrics.update(_activity_metrics(daily_diagnostics or []))
     return metrics
+
+
+def _risk_metrics(
+    daily_returns: Sequence[Mapping[str, Any]],
+    *,
+    annualization_factor: int = 252,
+    cvar_alpha: float = 0.05,
+) -> dict[str, Any]:
+    returns_arr = np.array([float(row["net_return"]) for row in daily_returns], dtype=np.float64)
+    returns_arr = returns_arr[np.isfinite(returns_arr)]
+    if len(returns_arr) < 2:
+        return {
+            "annualized_return": np.nan,
+            "annualized_volatility": np.nan,
+            "sharpe": np.nan,
+            "sortino": np.nan,
+            "calmar": np.nan,
+            "max_drawdown_abs": np.nan,
+            "var95_loss": np.nan,
+            "cvar95_loss": np.nan,
+        }
+    cumulative_return = float(np.prod(1.0 + returns_arr) - 1.0)
+    n = len(returns_arr)
+    annualized_return = float((1.0 + cumulative_return) ** (annualization_factor / n) - 1.0)
+    std = float(returns_arr.std(ddof=0))
+    annualized_volatility = float(std * np.sqrt(annualization_factor))
+    sharpe = 0.0 if std == 0.0 else float(returns_arr.mean() / std * np.sqrt(annualization_factor))
+    downside = returns_arr[returns_arr < 0.0]
+    downside_std = float(downside.std(ddof=0)) if len(downside) > 0 else 0.0
+    sortino = 0.0 if downside_std == 0.0 else float(returns_arr.mean() / downside_std * np.sqrt(annualization_factor))
+    nav = np.cumprod(1.0 + returns_arr)
+    drawdown = nav / np.maximum.accumulate(nav) - 1.0
+    max_drawdown_abs = float(abs(drawdown.min()))
+    calmar = 0.0 if max_drawdown_abs == 0.0 else float(annualized_return / max_drawdown_abs)
+    threshold = float(np.quantile(returns_arr, cvar_alpha))
+    tail = returns_arr[returns_arr <= threshold]
+    cvar95_loss = float(-tail.mean()) if len(tail) > 0 else np.nan
+    var95_loss = float(-threshold)
+    return {
+        "annualized_return": annualized_return,
+        "annualized_volatility": annualized_volatility,
+        "sharpe": sharpe,
+        "sortino": sortino,
+        "calmar": calmar,
+        "max_drawdown_abs": max_drawdown_abs,
+        "var95_loss": var95_loss,
+        "cvar95_loss": cvar95_loss,
+    }
 
 
 def _activity_metrics(daily_diagnostics: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -1301,6 +1550,42 @@ def _activity_metrics(daily_diagnostics: Sequence[Mapping[str, Any]]) -> dict[st
     activity_gate = _first_text_value(frame, "activity_gate_enforced")
     if activity_gate:
         metrics["activity_gate_enforced"] = activity_gate
+
+    # CQR gate aggregation fields
+    executed_gate = _numeric_series(frame, "executed_gate_action")
+    if executed_gate.isna().all():
+        executed_gate = _numeric_series(frame, "gate_action")
+    executed_gate = executed_gate.fillna(0.0)
+    gate_action_count = float(executed_gate.sum())
+    gate_hold_count = float((executed_gate < 0.5).sum())
+    gate_total = gate_action_count + gate_hold_count
+    metrics["gate_action_ratio"] = gate_action_count / float(max(1, gate_total))
+    metrics["gate_action_hold_count"] = gate_hold_count
+    metrics["gate_action_rebalance_count"] = gate_action_count
+    if gate_total > 0:
+        p_rebalance = gate_action_count / gate_total
+        p_hold = gate_hold_count / gate_total
+        entropy = 0.0
+        if p_rebalance > 0:
+            entropy -= p_rebalance * np.log(p_rebalance)
+        if p_hold > 0:
+            entropy -= p_hold * np.log(p_hold)
+        metrics["gate_action_entropy"] = float(entropy)
+    else:
+        metrics["gate_action_entropy"] = 0.0
+    raw_gate = _numeric_series(frame, "raw_gate_action")
+    if raw_gate.isna().all():
+        raw_gate = _numeric_series(frame, "raw_model_requested_rebalance")
+    metrics["raw_gate_action_ratio"] = float(raw_gate.fillna(0.0).mean())
+    pred_delta = _numeric_series(frame, "pred_delta_utility").dropna()
+    metrics["q_value_gap_mean"] = float(pred_delta.mean()) if len(pred_delta) > 0 else 0.0
+    metrics["q_value_gap_std"] = float(pred_delta.std()) if len(pred_delta) > 1 else 0.0
+    actor_update = _numeric_series(frame, "ppo_actor_update_mask").fillna(1.0)
+    metrics["actor_update_count"] = float(actor_update.sum())
+    metrics["actor_skipped_by_gate_count"] = float((actor_update < 0.5).sum())
+    total_actor = metrics["actor_update_count"] + metrics["actor_skipped_by_gate_count"]
+    metrics["effective_actor_update_ratio"] = metrics["actor_update_count"] / float(max(1, total_actor))
+
     return metrics
 
 
@@ -1350,6 +1635,9 @@ def _write_outputs(result: BacktestResult, output_dir: str | Path) -> BacktestRe
     if not result.baseline_daily_diagnostics.empty:
         artifact_paths["baseline_daily_diagnostics"] = output_path / "baseline_daily_diagnostics.csv"
         result.baseline_daily_diagnostics.to_csv(artifact_paths["baseline_daily_diagnostics"], index=False)
+    if not result.daily_asset_returns.empty and _requires_daily_asset_returns_artifact(result):
+        artifact_paths["daily_asset_returns"] = output_path / "daily_asset_returns.csv"
+        result.daily_asset_returns.to_csv(artifact_paths["daily_asset_returns"], index=False)
     return BacktestResult(
         daily_returns=result.daily_returns,
         daily_weights=result.daily_weights,
@@ -1360,7 +1648,23 @@ def _write_outputs(result: BacktestResult, output_dir: str | Path) -> BacktestRe
         run_manifest=result.run_manifest,
         portfolio_state=result.portfolio_state,
         baseline_daily_diagnostics=result.baseline_daily_diagnostics,
+        daily_asset_returns=result.daily_asset_returns,
         artifact_paths=artifact_paths,
+    )
+
+
+def _requires_daily_asset_returns_artifact(result: BacktestResult) -> bool:
+    diagnostics = result.baseline_daily_diagnostics
+    if diagnostics.empty:
+        return False
+    return any(
+        column in diagnostics.columns
+        for column in (
+            "pred_candidate_utility",
+            "pred_hold_utility",
+            "pred_candidate_lower_tail_loss",
+            "pred_hold_lower_tail_loss",
+        )
     )
 
 

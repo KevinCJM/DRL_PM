@@ -40,9 +40,21 @@ acquire_lock_or_exit() {
 start_exp37() {
   local log_path="results/background_logs/EXP37_P16_ra_gt_rcpo_ablation_s42.log"
   echo "[run] $(timestamp) starting_exp37"
-  nohup /bin/zsh -lc \
-    "./.venv/bin/python -m src.experiments.run_experiment --config configs/paper/p16_ra_gt_rcpo_ablation.yaml --seed 42 --run-name EXP37_P16_ra_gt_rcpo_ablation_s42 2>&1 | tee \"$log_path\"" \
-    >/dev/null 2>&1 &
+  mkdir -p "$(dirname "$log_path")"
+  if command -v tmux >/dev/null 2>&1; then
+    if tmux has-session -t drl_exp37 >/dev/null 2>&1; then
+      echo "[skip] $(timestamp) exp37_tmux_already_running"
+      return 0
+    fi
+    tmux new-session -d -s drl_exp37 \
+      "cd \"$ROOT\" && ./.venv/bin/python -m src.experiments.run_experiment --config configs/paper/p16_ra_gt_rcpo_ablation.yaml --seed 42 --run-name EXP37_P16_ra_gt_rcpo_ablation_s42 >\"$log_path\" 2>&1"
+    return 0
+  fi
+  nohup ./.venv/bin/python -m src.experiments.run_experiment \
+    --config configs/paper/p16_ra_gt_rcpo_ablation.yaml \
+    --seed 42 \
+    --run-name EXP37_P16_ra_gt_rcpo_ablation_s42 \
+    >"$log_path" 2>&1 &
 }
 
 group_ready() {
@@ -156,11 +168,14 @@ while true; do
 done
 
 echo "[run] $(timestamp) resuming_exp37"
-mapfile -t exp37_pids < <(pgrep -f 'EXP37_P16_ra_gt_rcpo_ablation_s42' || true)
-if [[ ${#exp37_pids[@]} -eq 0 ]]; then
+exp37_pids="$(pgrep -f 'EXP37_P16_ra_gt_rcpo_ablation_s42' || true)"
+if [[ -z "$exp37_pids" ]]; then
   start_exp37
   echo "[done] $(timestamp) exp37_started"
   exit 0
 fi
-kill -CONT "${exp37_pids[@]}"
+while IFS= read -r pid; do
+  [[ -n "$pid" ]] || continue
+  kill -CONT "$pid"
+done <<<"$exp37_pids"
 echo "[done] $(timestamp) exp37_resumed"

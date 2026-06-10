@@ -2,6 +2,7 @@ from copy import deepcopy
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 import src.experiments.run_experiment as run_experiment
 from scripts.recover_exp05_p7_formal_seed import _best_trial as _p7_recovery_best_trial
@@ -63,6 +64,155 @@ def test_hpo_final_selection_prefers_activity_passed_trials():
 
     assert best.number == 1
     assert selected["best"].number == 1
+
+
+def test_hpo_final_reports_retry_validation_best_when_final_activity_fails(monkeypatch):
+    config = _active_config()
+    experiment = SimpleNamespace(config=config)
+    validation_best = SimpleNamespace(number=0, value=10.0, params={"x": 0}, user_attrs={})
+    validation_second = SimpleNamespace(number=1, value=5.0, params={"x": 1}, user_attrs={})
+
+    def fake_final_test(_experiment, trial, _final_split):
+        if trial.number == 0:
+            return _result(hit_rate=0.0, turnover_per_opportunity=0.0)
+        return _result(hit_rate=0.2, turnover_per_opportunity=0.01)
+
+    monkeypatch.setattr(run_experiment, "_run_hpo_final_test", fake_final_test)
+
+    reports = run_experiment._run_hpo_final_reports(
+        experiment,
+        [validation_best, validation_second],
+        "maximize",
+        "test",
+    )
+
+    assert reports["best"]["trial_number"] == 1
+    assert reports["best"]["validation_value"] == 5.0
+    assert _activity_trial_failure_reason(reports["best"]["result"], config) is None
+
+
+def test_hpo_final_reports_rejects_failed_final_when_validation_activity_passed(monkeypatch):
+    config = _active_config()
+    experiment = SimpleNamespace(config=config)
+    validation_best = SimpleNamespace(number=0, value=10.0, params={"x": 0}, user_attrs={})
+    validation_second = SimpleNamespace(number=1, value=5.0, params={"x": 1}, user_attrs={})
+
+    monkeypatch.setattr(
+        run_experiment,
+        "_run_hpo_final_test",
+        lambda *_args, **_kwargs: _result(hit_rate=0.0, turnover_per_opportunity=0.0),
+    )
+
+    with pytest.raises(RuntimeError, match="ERR_HPO_FINAL_ACTIVITY_NO_PASSING_TRIAL"):
+        run_experiment._run_hpo_final_reports(
+            experiment,
+            [validation_best, validation_second],
+            "maximize",
+            "test",
+        )
+
+
+def test_hpo_final_reports_allows_soft_failure_when_no_validation_activity_passed(monkeypatch):
+    config = _active_config()
+    experiment = SimpleNamespace(config=config)
+    validation_failed = SimpleNamespace(
+        number=0,
+        value=10.0,
+        params={"x": 0},
+        user_attrs={"activity_failure_reason": "failed_low_trade_activity"},
+    )
+
+    monkeypatch.setattr(
+        run_experiment,
+        "_run_hpo_final_test",
+        lambda *_args, **_kwargs: _result(hit_rate=0.0, turnover_per_opportunity=0.0),
+    )
+
+    reports = run_experiment._run_hpo_final_reports(
+        experiment,
+        [validation_failed],
+        "maximize",
+        "test",
+    )
+
+    assert reports["best"]["trial_number"] == 0
+    assert reports["best"]["selection_activity_failure_reason"] == "failed_low_trade_activity"
+    assert reports["best"]["activity_failure_reason"] == "failed_low_trade_activity"
+    assert _activity_trial_failure_reason(reports["best"]["result"], config) == "failed_low_trade_activity"
+
+
+def test_validation_activity_failed_final_pass_is_non_rankable(monkeypatch):
+    config = _active_config()
+    experiment = SimpleNamespace(config=config)
+    validation_failed = SimpleNamespace(
+        number=0,
+        value=10.0,
+        params={"x": 0},
+        user_attrs={"activity_failure_reason": "failed_low_trade_activity"},
+    )
+
+    monkeypatch.setattr(
+        run_experiment,
+        "_run_hpo_final_test",
+        lambda *_args, **_kwargs: _result(hit_rate=0.2, turnover_per_opportunity=0.01),
+    )
+
+    reports = run_experiment._run_hpo_final_reports(
+        experiment,
+        [validation_failed],
+        "maximize",
+        "test",
+    )
+    table = run_experiment._hpo_final_report_table(
+        reports,
+        model_name="full_dqn_gated_multitask_cnn_ppo",
+        study_name="selection_failed",
+        final_split="test",
+        best_trial_number=0,
+        best_value=10.0,
+        trial_count=1,
+        selection_split="validation",
+        config=config,
+    )
+    payload = _result(hit_rate=0.2, turnover_per_opportunity=0.01)
+    payload.update(
+        {
+            "status": "completed",
+            "model_name": "full_dqn_gated_multitask_cnn_ppo",
+            "hpo_model_name": "full_dqn_gated_multitask_cnn_ppo",
+            "best_trial_number": 0,
+            "best_value": 10.0,
+            "hpo_final_reports": run_experiment._hpo_final_report_summaries(reports),
+            "hpo_final_reports_table": table,
+            "main_comparison": pd.DataFrame(
+                [
+                    {
+                        "model_name": "full_dqn_gated_multitask_cnn_ppo",
+                        "baseline_family": "model",
+                        "rankable_in_unified_table": True,
+                        "paper_included": True,
+                        "model_rebalance_hit_rate": 0.2,
+                        "non_initial_turnover_per_opportunity": 0.01,
+                        "average_turnover": 0.01,
+                    }
+                ]
+            ),
+        }
+    )
+
+    _apply_hpo_final_activity_status(payload, config)
+    comparison = _hpo_model_final_comparison([payload])
+
+    assert reports["best"]["selection_activity_failure_reason"] == "failed_low_trade_activity"
+    assert reports["best"]["final_activity_failure_reason"] == ""
+    assert table.loc[0, "selection_activity_failure_reason"] == "failed_low_trade_activity"
+    assert table.loc[0, "final_activity_failure_reason"] == "failed_low_trade_activity"
+    assert bool(table.loc[0, "rankable_in_unified_table"]) is False
+    assert payload["selection_activity_failure_reason"] == "failed_low_trade_activity"
+    assert payload["final_activity_failure_reason"] == "failed_low_trade_activity"
+    assert bool(comparison.loc[0, "rankable_in_unified_table"]) is False
+    assert bool(comparison.loc[0, "paper_included"]) is False
+    assert comparison.loc[0, "reason"] == "failed_low_trade_activity"
 
 
 def test_p7_recovery_best_trial_prefers_activity_passed_trials():
@@ -223,6 +373,31 @@ def test_equal_budget_best_payload_ignores_non_rankable_final_activity_winner():
     )
 
     assert selected["hpo_model_name"] == "active_model"
+
+
+def test_equal_budget_best_payload_allows_activity_passed_pilot_payload():
+    selected = _best_hpo_model_payload(
+        [
+            {
+                "status": "completed",
+                "hpo_model_name": "pilot_activity_passed",
+                "best_value": 10.0,
+                "rankable_in_unified_table": False,
+                "diagnostic_status": "diagnostic",
+                "final_activity_failure_reason": "",
+            },
+            {
+                "status": "completed",
+                "hpo_model_name": "formal_lower_value",
+                "best_value": 1.0,
+                "rankable_in_unified_table": True,
+                "final_activity_failure_reason": "",
+            },
+        ],
+        "maximize",
+    )
+
+    assert selected["hpo_model_name"] == "pilot_activity_passed"
 
 
 def _active_config():

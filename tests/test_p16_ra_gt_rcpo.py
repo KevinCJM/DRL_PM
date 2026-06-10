@@ -104,6 +104,56 @@ def test_p16_partial_rho_holds_when_executed_turnover_below_threshold():
     assert action.action_info["forced_hold_reason"] == "below_rebalance_turnover_threshold"
 
 
+def test_p16_learned_rho_zero_uses_normalized_gate_activity_fallback():
+    config = _strategy_config()
+    config["ra_gt_rcpo"].update(
+        {
+            "rho_policy": "straight_through_gumbel_softmax_v1",
+            "alpha_scale": 0.001,
+            "alpha_activation_threshold": 0.01,
+            "hold_opportunity_penalty": -0.5,
+            "lambda_turnover": 0.0,
+            "lambda_cost": 0.0,
+            "lambda_cvar": 0.0,
+            "lambda_drawdown": 0.0,
+            "average_turnover_per_step_budget": 1.0,
+            "average_cost_per_step_budget": 1.0,
+            "cvar_loss_budget": 1.0,
+            "drawdown_budget": 1.0,
+        }
+    )
+    config["execution_activity"]["model_rebalance_turnover_threshold"] = 0.0
+    strategy = RiskAwareGTRCPOStrategy(config)
+    strategy._agent.select_action = lambda *_args: {
+        "candidate_weights": np.array([0.95, 0.05]),
+        "raw_rho": 0.0,
+        "rho": 0.0,
+        "rho_action_index": 0,
+        "rho_probs": [1.0, 0.0, 0.0, 0.0, 0.0],
+        "rho_logits": [10.0, -10.0, -10.0, -10.0, -10.0],
+        "rho_entropy": 0.0,
+        "rho_expected": 0.0,
+        "rho_eval_mode": "argmax",
+        "rho_eval_entropy_normalized": 0.0,
+        "rho_eval_used_expected": False,
+        "graph_density": 0.0,
+        "mean_abs_correlation": 0.0,
+        "value_return": 0.0,
+        "value_cost": 0.0,
+        "value_drawdown": 0.0,
+        "value_cvar_loss": 0.0,
+    }
+    strategy.set_decision_context(scheduler_allowed_rebalance=True, scheduler_pre_allowed=True, first_trade=False)
+
+    action = strategy.compute_target_weights(_decision_state(), _portfolio_state())
+
+    assert action.rebalance_action == 1
+    assert action.action_info["agent_raw_rho"] == 0.0
+    assert action.action_info["raw_rho"] > 0.0
+    assert action.action_info["raw_model_requested_rebalance"] is True
+    assert action.action_info["learned_rho_policy_adjustment_reason"] == "normalized_gate_activity_fallback"
+
+
 def test_p16_normalized_gate_uses_hpo_top_level_constraints():
     config = _strategy_config()
     config["hpo"]["search_space"] = {

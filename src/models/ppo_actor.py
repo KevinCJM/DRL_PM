@@ -7,6 +7,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Dirichlet
 
+from src.data.loader import DataContractError
+
 
 MIN_ALPHA = 1.0e-3
 
@@ -70,7 +72,18 @@ class MaskedDirichlet:
                 log_probs[i] = dist.log_prob(v)
             else:
                 log_probs[i] = 0.0
+        if not torch.isfinite(log_probs).all():
+            raise DataContractError("ERR_POLICY_NON_FINITE_LOG_PROB", "ERR_POLICY_NON_FINITE_LOG_PROB")
         return log_probs
+
+    def entropy(self) -> torch.Tensor:
+        entropies = torch.zeros(self.batch_size, device=self.device)
+        for i, dist in enumerate(self.dists):
+            if dist is not None:
+                entropies[i] = dist.entropy()
+        if not torch.isfinite(entropies).all():
+            raise DataContractError("ERR_POLICY_NON_FINITE_ENTROPY", "ERR_POLICY_NON_FINITE_ENTROPY")
+        return entropies
 
 class PPOActor(nn.Module):
     def __init__(
@@ -78,12 +91,16 @@ class PPOActor(nn.Module):
         latent_dim: int,
         n_assets: int,
         min_alpha: float = MIN_ALPHA,
+        max_alpha: float | None = None,
         hidden_dims: Sequence[int] | None = None,
     ):
         super().__init__()
         self.latent_dim = int(latent_dim)
         self.n_assets = int(n_assets)
         self.min_alpha = float(min_alpha)
+        self.max_alpha = float(max_alpha) if max_alpha is not None else None
+        if self.max_alpha is not None and self.max_alpha <= self.min_alpha:
+            raise ValueError(f"ERR_CONFIG_ALPHA_RANGE: max_alpha({self.max_alpha}) <= min_alpha({self.min_alpha})")
 
         dims = [self.latent_dim, *(hidden_dims or (256, 128))]
         layers: list[nn.Module] = []
@@ -96,6 +113,8 @@ class PPOActor(nn.Module):
         if latent.ndim != 2 or latent.shape[1] != self.latent_dim:
             raise ValueError("ERR_POLICY_SHAPE_MISMATCH: latent must be [batch,latent_dim]")
         alpha = F.softplus(self.alpha_net(latent)) + self.min_alpha
+        if self.max_alpha is not None:
+            alpha = torch.clamp(alpha, max=self.max_alpha)
         if not torch.isfinite(alpha).all():
             raise ValueError("ERR_ALPHA_NON_FINITE: Dirichlet concentration parameters contain NaN or Inf")
         return alpha

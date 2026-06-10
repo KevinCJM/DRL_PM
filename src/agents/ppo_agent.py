@@ -211,9 +211,11 @@ class PPOAgent:
         self.critic.eval()
         if self.gate_network is not None:
             self.gate_network.eval()
-        market_image, availability_mask = self._observation_tensors([observation])
+        market_image, availability_mask, risk_state = self._observation_tensors([observation])
         current_weights = _current_weights_from_observation(observation, market_image.device)
         latent = self.encoder(market_image)
+        if risk_state is not None:
+            latent = torch.cat([latent, risk_state], dim=-1)
         distribution = self.actor.get_distribution(latent, availability_mask)
         candidate_weights = distribution.mean if deterministic else distribution.sample()
         log_prob = distribution.log_prob(candidate_weights)
@@ -283,7 +285,7 @@ class PPOAgent:
     def value(self, observation: Mapping[str, Any]) -> float:
         if self.policy_model is not None:
             self.policy_model.eval()
-            market_image, availability_mask = self._observation_tensors([observation])
+            market_image, availability_mask, risk_state = self._observation_tensors([observation])
             current_weights = _current_weights_from_observation(observation, market_image.device)
             estimate = torch.zeros((market_image.shape[0], 1), dtype=market_image.dtype, device=market_image.device)
             outputs = self._policy_forward(
@@ -294,12 +296,16 @@ class PPOAgent:
                 estimate,
                 deterministic=True,
                 omega=_preference_omega_from_states([observation], self.device),
+                risk_state=risk_state,
             )
             return float(outputs["value"].view(-1)[0].detach().cpu())
         self.encoder.eval()
         self.critic.eval()
-        market_image, _ = self._observation_tensors([observation])
-        return float(self.critic(self.encoder(market_image)).squeeze(0).detach().cpu())
+        market_image, _, risk_state = self._observation_tensors([observation])
+        latent = self.encoder(market_image)
+        if risk_state is not None:
+            latent = torch.cat([latent, risk_state], dim=-1)
+        return float(self.critic(latent).squeeze(0).detach().cpu())
 
     def update(self, rollout_buffer: RolloutBuffer | None = None) -> dict[str, float]:
         buffer = rollout_buffer or self.rollout_buffer
@@ -332,8 +338,10 @@ class PPOAgent:
     def compute_losses(self, batch: Mapping[str, Any]) -> dict[str, torch.Tensor]:
         if self.policy_model is not None:
             return self._compute_policy_model_losses(batch)
-        market_image, availability_mask = self._observation_tensors(batch["state"])
+        market_image, availability_mask, risk_state = self._observation_tensors(batch["state"])
         latent = self.encoder(market_image)
+        if risk_state is not None:
+            latent = torch.cat([latent, risk_state], dim=-1)
         candidate_weights = batch["candidate_weights"].to(self.device)
         old_log_prob = batch["log_prob"].to(self.device)
         old_values = batch["value"].to(self.device)
@@ -376,7 +384,7 @@ class PPOAgent:
         }
 
     def _compute_policy_model_losses(self, batch: Mapping[str, Any]) -> dict[str, torch.Tensor]:
-        market_image, availability_mask = self._observation_tensors(batch["state"])
+        market_image, availability_mask, risk_state = self._observation_tensors(batch["state"])
         candidate_weights = batch["candidate_weights"].to(self.device)
         old_log_prob = batch["log_prob"].to(self.device)
         old_values = batch["value"].to(self.device)
@@ -402,6 +410,7 @@ class PPOAgent:
             candidate_weights_override=candidate_weights,
             rebalance_intensity_override=rebalance_intensity,
             omega=_preference_omega_from_states(batch["state"], self.device),
+            risk_state=risk_state,
         )
         log_prob = outputs.get("joint_log_prob", outputs.get("log_prob"))
         new_log_prob = _column_tensor(log_prob, self.device, "new_log_prob")
@@ -469,6 +478,7 @@ class PPOAgent:
         rebalance_intensity_override: torch.Tensor | None = None,
         omega: torch.Tensor | None = None,
         reward_vector: torch.Tensor | None = None,
+        risk_state: torch.Tensor | None = None,
     ) -> Mapping[str, Any]:
         if self.policy_model is None:
             raise ValueError("ERR_PPO_POLICY_MODEL_MISSING")
@@ -481,6 +491,8 @@ class PPOAgent:
             kwargs["omega"] = omega
         if reward_vector is not None and hasattr(self.policy_model, "conditioner"):
             kwargs["reward_vector"] = reward_vector
+        if risk_state is not None:
+            kwargs["risk_state"] = risk_state
         return self.policy_model(
             market_image,
             availability_mask,
@@ -531,7 +543,7 @@ class PPOAgent:
             return actor_loss_per_item.mean()
         return _weighted_mean(actor_loss_per_item, actor_loss_weight)
 
-    def _observation_tensors(self, states: Sequence[Mapping[str, Any]]) -> tuple[torch.Tensor, torch.Tensor]:
+    def _observation_tensors(self, states: Sequence[Mapping[str, Any]]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         market_image = torch.as_tensor(
             np.stack([np.asarray(state["market_image"], dtype=np.float32) for state in states]),
             dtype=torch.float32,
@@ -542,19 +554,22 @@ class PPOAgent:
             dtype=torch.bool,
             device=self.device,
         )
+        risk_state = None
+        if states and "risk_state" in states[0]:
+            risk_state = torch.as_tensor(
+                np.stack([np.asarray(s["risk_state"], dtype=np.float32) for s in states]),
+                dtype=torch.float32,
+                device=self.device,
+            )
         if market_image.ndim != 4:
             raise ValueError("ERR_PPO_AGENT_OBSERVATION_SHAPE: market_image must be [batch,n_features,window,n_assets]")
         if availability_mask.ndim != 2 or availability_mask.shape[0] != market_image.shape[0]:
             raise ValueError("ERR_PPO_AGENT_OBSERVATION_SHAPE: availability_mask must be [batch,n_assets]")
-        return market_image, availability_mask
+        return market_image, availability_mask, risk_state
 
     @staticmethod
     def _entropy(distribution: MaskedDirichlet) -> torch.Tensor:
-        entropies = torch.zeros(distribution.batch_size, device=distribution.device)
-        for index, dist in enumerate(distribution.dists):
-            if dist is not None:
-                entropies[index] = dist.entropy()
-        return entropies
+        return distribution.entropy()
 
     def _select_action_with_policy_model(
         self,
@@ -564,7 +579,7 @@ class PPOAgent:
         gate_action_selector: Callable[[torch.Tensor], torch.Tensor] | None,
     ) -> dict[str, Any]:
         self.policy_model.eval()
-        market_image, availability_mask = self._observation_tensors([observation])
+        market_image, availability_mask, risk_state = self._observation_tensors([observation])
         current_weights = _current_weights_from_observation(observation, market_image.device)
         zero_estimate = torch.zeros((market_image.shape[0], 1), dtype=market_image.dtype, device=market_image.device)
         outputs = self._policy_forward(
@@ -575,6 +590,7 @@ class PPOAgent:
             zero_estimate,
             deterministic=deterministic,
             omega=_preference_omega_from_states([observation], self.device),
+            risk_state=risk_state,
         )
         candidate_weights = _output_tensor(outputs, "candidate_weights", self.device)
         model_intensity_tensor = _optional_output_tensor(_raw_rebalance_intensity_output(outputs), self.device)
@@ -594,6 +610,7 @@ class PPOAgent:
             candidate_weights_override=candidate_weights,
             rebalance_intensity_override=model_intensity_tensor,
             omega=_preference_omega_from_states([observation], self.device),
+            risk_state=risk_state,
         )
         candidate_weights = _output_tensor(outputs, "candidate_weights", self.device)
         estimated_turnover, estimated_cost = _estimate_action_cost(

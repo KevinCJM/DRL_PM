@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import yaml
 
 from src.baselines import (
     BuyAndHoldStrategy,
@@ -51,12 +52,14 @@ from src.baselines import (
 from src.baselines.bernoulli_gated_ppo import BernoulliGatedPPOStrategy
 from src.baselines.dqn_only import DQNOnlyStrategy
 from src.baselines.eiie import EIIEStrategy
+from src.baselines.otar_cqr_gate_strategy import OTarCQRGateStrategy
 from src.config import DEFAULT_CONFIG, PROJECT_ROOT, VALID_EXPERIMENT_TYPES, assert_path_allowed
 from src.envs.constraint_manager import ConstraintManager
 from src.envs.cost_model import CostModel
 from src.envs.portfolio_execution_core import PortfolioExecutionCore
 from src.experiments.pipeline import (
     build_pipeline_artifacts,
+    filter_validation_only_hpo_params,
     objective_metric,
     run_strategy_backtest,
     run_seed_stability_training,
@@ -202,6 +205,8 @@ DEEP_BASELINE_CLASSES = {
     "hybrid_dqn_optimizer_minimum_variance": HybridDQNOptimizerMinimumVarianceStrategy,
     "hybrid_dqn_optimizer_sharpe_maximization": HybridDQNOptimizerSharpeMaximizationStrategy,
     "hybrid_dqn_optimizer_risk_parity": HybridDQNOptimizerRiskParityStrategy,
+    "otar_cqr_gate": OTarCQRGateStrategy,
+    "otar_fixed": PPODQNHierarchicalReimplementationStrategy,
 }
 HYBRID_DQN_OPTIMIZER_ALIAS = "hybrid_dqn_optimizer_reimplementation"
 HYBRID_DQN_OPTIMIZER_CHILD_MODEL_NAMES = (
@@ -379,7 +384,8 @@ class HPOExperiment(BaseExperiment):
         return result
 
     def run_trial(self, trial: Any, train_split: str, validation_split: str) -> dict[str, Any]:
-        trial_config = _config_with_trial_params(self.config, trial)
+        model_name = _active_hpo_model_name(self, self.config)
+        trial_config = _config_with_trial_params(self.config, trial, model_name=model_name)
         split_override = getattr(self, "active_split", None)
         model_name = _active_hpo_model_name(self, trial_config)
         if model_name in DEEP_BASELINE_CLASSES:
@@ -418,7 +424,8 @@ class HPOExperiment(BaseExperiment):
         return result
 
     def run_final_test(self, best_trial: Any, split: str) -> dict[str, Any]:
-        final_config = _config_with_params(self.config, getattr(best_trial, "params", {}))
+        best_params = filter_validation_only_hpo_params(getattr(best_trial, "params", {}))
+        final_config = _config_with_params(self.config, best_params)
         split_override = getattr(self, "active_split", None)
         final_label = str(getattr(self, "final_test_label", "final_test"))
         model_name = _active_hpo_model_name(self, final_config)
@@ -545,7 +552,7 @@ class ExperimentRegistry:
         device: Any | None = None,
         run_dir: str | Path | None = None,
     ) -> BaseExperiment:
-        resolved_config = _config_copy(config)
+        resolved_config = _merge_otar_hpo_grid_sources(_config_copy(config))
         experiment_type = _experiment_type(resolved_config)
         ablation_meta = _validate_ablation_single_switch(resolved_config, experiment_type)
         context = self._context(resolved_config, device=device, run_dir=run_dir)
@@ -1128,14 +1135,92 @@ def _config_for_module_model(config: Mapping[str, Any], experiment_type: str, mo
     return resolved
 
 
-def _config_with_trial_params(config: Mapping[str, Any], trial: Any) -> dict[str, Any]:
-    hpo_config = config.get("hpo")
+def _config_with_trial_params(
+    config: Mapping[str, Any],
+    trial: Any,
+    *,
+    model_name: str | None = None,
+) -> dict[str, Any]:
+    source_config = _merge_otar_hpo_grid_sources(config)
+    hpo_config = source_config.get("hpo")
     search_space = hpo_config.get("search_space") if isinstance(hpo_config, Mapping) else None
+    active_model = str(model_name or _mapping(source_config.get("model")).get("name", ""))
     params: dict[str, Any] = {}
     if isinstance(search_space, Mapping):
         for name, spec in search_space.items():
+            spec_mapping = _mapping(spec)
+            model_scope = spec_mapping.get("models") or spec_mapping.get("model_names")
+            if isinstance(model_scope, Sequence) and not isinstance(model_scope, (str, bytes)):
+                if active_model and active_model not in {str(item) for item in model_scope}:
+                    continue
             params[str(name)] = _suggest_param(trial, str(name), spec)
-    return _config_with_params(config, params)
+    return _config_with_params(source_config, params)
+
+
+def _merge_otar_hpo_grid_sources(config: Mapping[str, Any]) -> dict[str, Any]:
+    resolved = deepcopy(dict(config))
+    hpo_config = resolved.get("hpo")
+    if not isinstance(hpo_config, dict):
+        return resolved
+    if hpo_config.get("enabled") is not True and _experiment_type(resolved) != "hyperparameter_sweep":
+        return resolved
+    if not _is_otar_hpo_config(resolved):
+        return resolved
+
+    search_space = hpo_config.get("search_space")
+    if not isinstance(search_space, dict):
+        search_space = {}
+        hpo_config["search_space"] = search_space
+
+    for grid_path in (
+        PROJECT_ROOT / "configs" / "paper" / "otar_actor_policy_hpo_grid.yaml",
+        PROJECT_ROOT / "configs" / "paper" / "otar_cqr_hpo_grid.yaml",
+    ):
+        model_scope = ["otar_cqr_gate"] if grid_path.name == "otar_cqr_hpo_grid.yaml" else None
+        for name, values in _otar_grid_candidate_values(grid_path).items():
+            if name in search_space:
+                continue
+            if name == "simplex_parameterization":
+                search_space[name] = {"values": list(values) if isinstance(values, Sequence) and not isinstance(values, str) else [values]}
+            elif isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
+                search_space[name] = {"values": list(values)}
+            else:
+                search_space[name] = {"values": [values]}
+            if model_scope is not None:
+                search_space[name]["models"] = list(model_scope)
+    return resolved
+
+
+def _is_otar_hpo_config(config: Mapping[str, Any]) -> bool:
+    protocol = _mapping(config.get("protocol"))
+    reward = _mapping(config.get("reward"))
+    cqr = _mapping(config.get("cqr"))
+    hpo = _mapping(config.get("hpo"))
+    model = _mapping(config.get("model"))
+    trainable_models = [str(item) for item in hpo.get("trainable_models", [])] if isinstance(hpo.get("trainable_models"), Sequence) else []
+    text_markers = {
+        str(protocol.get("protocol_id", "")),
+        str(protocol.get("asset_universe_id", "")),
+        str(reward.get("mode", "")),
+        str(model.get("name", "")),
+        *trainable_models,
+    }
+    return (
+        bool(cqr.get("enabled") is True)
+        or any("otar" in marker.lower() for marker in text_markers)
+        or str(reward.get("mode", "")).startswith("A13_otar")
+    )
+
+
+def _otar_grid_candidate_values(path: Path) -> Mapping[str, Any]:
+    if not path.exists():
+        return {}
+    with path.open("r", encoding="utf-8") as fh:
+        payload = yaml.safe_load(fh) or {}
+    if not isinstance(payload, Mapping):
+        return {}
+    candidates = payload.get("candidate_values")
+    return candidates if isinstance(candidates, Mapping) else {}
 
 
 def _config_with_params(config: Mapping[str, Any], params: Mapping[str, Any]) -> dict[str, Any]:
@@ -1154,6 +1239,10 @@ def _suggest_param(trial: Any, name: str, spec: Any) -> Any:
     param_type = str(spec.get("type", "float"))
     if "choices" in spec:
         return trial.suggest_categorical(name, list(spec["choices"]))
+    if "values" in spec:
+        return trial.suggest_categorical(name, list(spec["values"]))
+    if "candidate_values" in spec:
+        return trial.suggest_categorical(name, list(spec["candidate_values"]))
     if param_type == "int":
         return trial.suggest_int(name, int(spec["low"]), int(spec["high"]), step=int(spec.get("step", 1)))
     low = float(spec["low"])
@@ -1168,6 +1257,37 @@ def _default_hpo_param_path(name: str) -> str:
         "ppo_lr": "optimizer.ppo_lr",
         "dqn_lr": "optimizer.dqn_lr",
         "rebalance_intensity": "rebalance_intensity",
+        # OTAR reward params
+        "lambda_tail": "reward.lambda_tail",
+        "eta_v": "reward.eta_v",
+        "confidence_q": "reward.confidence_q",
+        "tau": "reward.tau",
+        "tau_v": "reward.tau_v",
+        "lambda_dd": "reward.lambda_dd",
+        "lambda_turnover": "reward.lambda_turnover",
+        "lambda_cvar": "reward.lambda_cvar",
+        "cvar_window": "reward.cvar_window",
+        # OTAR actor policy params
+        "concentration_alpha_min": "ppo.min_alpha",
+        "concentration_alpha_max": "ppo.max_alpha",
+        "entropy_coef": "ppo.entropy_coef",
+        "simplex_parameterization": "ppo.simplex_parameterization",
+        # OTAR CQR gate params
+        "gate_margin": "cqr.gate_margin",
+        "gate_gamma": "cqr.gate_gamma",
+        "n_quantiles": "cqr.n_quantiles",
+        "quantile_huber_kappa": "cqr.quantile_huber_kappa",
+        "target_update_interval": "cqr.target_update_interval",
+        "target_actor_action_mode": "cqr.target_actor_action_mode",
+        "gate_lr": "optimizer.gate_lr",
+        "replay_min_size": "cqr.replay_min_size",
+        "gate_batch_size": "cqr.gate_batch_size",
+        "calibration_horizon_H": "cqr.calibration_horizon_H",
+        "epsilon_start": "cqr.epsilon_start",
+        "epsilon_end": "cqr.epsilon_end",
+        "epsilon_decay_steps": "cqr.epsilon_decay_steps",
+        "min_rebalance_ratio_in_buffer": "cqr.min_rebalance_ratio_in_buffer",
+        "min_hold_ratio_in_buffer": "cqr.min_hold_ratio_in_buffer",
     }
     return mapping.get(name, name)
 

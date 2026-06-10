@@ -152,6 +152,8 @@ class PPODQNHierarchicalReimplementationStrategy(BaseStrategy):
             device=self.device,
             encoder=self.encoder,
             target_encoder=self.target_encoder,
+            use_risk_state=bool(self.model_config.get("use_risk_state", False)),
+            risk_state_dim=int(self.model_config.get("risk_state_dim", 8)),
         )
         self.replay_buffer = self.dqn_agent.replay_buffer
         self._real_transition_count = 0

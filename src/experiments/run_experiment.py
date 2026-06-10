@@ -17,17 +17,26 @@ from typing import Any, Sequence
 
 import pandas as pd
 
+import importlib.metadata
+import subprocess
+
 from src.config import ConfigError, ConfigLoader, PROJECT_ROOT, assert_path_allowed
 from src.data.loader import DataContractError
 from src.data.loader import load_market_dataset
 from src.data.splits import create_split
 from src.experiments.aggregate_results import aggregate_walk_forward
+from src.experiments.formal_readiness import (
+    _otar_promotion_gate_a3_vs_a2,
+    _otar_promotion_gate_a4_vs_a3,
+)
+from src.experiments.pipeline import run_otar_formal_matrix
 from src.experiments.registry import (
     ExperimentRegistry,
     HPOExperiment,
     HYBRID_DQN_OPTIMIZER_ALIAS,
     HYBRID_DQN_OPTIMIZER_CHILD_MODEL_NAMES,
     _expand_baseline_aliases,
+    _merge_otar_hpo_grid_sources,
 )
 from src.utils.device import get_device
 from src.utils.logger import mark_run_failed, mark_run_status, save_json_atomic, save_yaml_atomic, write_run_outputs
@@ -152,6 +161,7 @@ NATIVE_HPO_MODEL_NAMES = {
     "eiie_native",
     "pgportfolio_eiie_native",
     "ppo_dqn_hierarchical_reimplementation",
+    "otar_cqr_gate",
     "cage_eiie_frozen_gate",
     "cage_eiie_multilevel_gate",
     "cage_eiie_distributional",
@@ -203,6 +213,8 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--device")
     parser.add_argument("--output")
     parser.add_argument("--run-name")
+    parser.add_argument("--formal-matrix", help="Path to OTAR formal matrix YAML to expand and execute.")
+    parser.add_argument("--formal-max-runs", type=int, help="Limit expanded formal child runs for smoke execution.")
     return parser.parse_args(argv)
 
 
@@ -345,21 +357,30 @@ def _run_equal_budget_hpo(experiment: HPOExperiment, model_names: Sequence[str])
         try:
             payload = dict(_run_hpo_single(model_experiment))
         except Exception as exc:
-            if not diagnostic_run and not _is_hybrid_optimizer_child(model_name):
+            if _is_hpo_final_activity_failure(exc):
+                failure = _hybrid_child_failure(model_name, exc)
+                payload = _hybrid_child_failure_payload(failure, partial_diagnostic=False)
+                child_failure_handled = True
+            elif not diagnostic_run and not _is_hybrid_optimizer_child(model_name):
                 raise
-            failure = _hybrid_child_failure(model_name, exc)
-            if not diagnostic_run:
-                return _hybrid_required_child_failed_result(
-                    config,
-                    run_dir,
-                    parent_rows,
-                    model_payloads,
-                    failure,
-                )
-            payload = _hybrid_child_failure_payload(failure)
-            child_failures.append(failure)
-            child_failure_handled = True
+            else:
+                failure = _hybrid_child_failure(model_name, exc)
+                if not diagnostic_run:
+                    return _hybrid_required_child_failed_result(
+                        config,
+                        run_dir,
+                        parent_rows,
+                        model_payloads,
+                        failure,
+                    )
+                payload = _hybrid_child_failure_payload(failure)
+                child_failures.append(failure)
+                child_failure_handled = True
         payload["hpo_model_name"] = model_name
+        if not child_failure_handled and _is_hpo_final_activity_failure_payload(payload):
+            failure = _hybrid_child_failure(model_name, payload)
+            payload.update(_hybrid_child_failure_payload(failure, partial_diagnostic=False))
+            child_failure_handled = True
         if not child_failure_handled and _is_failed_hpo_child_payload(payload):
             failure = _hybrid_child_failure(model_name, payload)
             if not diagnostic_run and _is_hybrid_optimizer_child(model_name):
@@ -448,6 +469,16 @@ def _is_failed_hpo_child_payload(payload: Mapping[str, Any]) -> bool:
     return status is not None and str(status) != "completed"
 
 
+def _is_hpo_final_activity_failure(exc: BaseException) -> bool:
+    return "ERR_HPO_FINAL_ACTIVITY_NO_PASSING_TRIAL" in str(exc)
+
+
+def _is_hpo_final_activity_failure_payload(payload: Mapping[str, Any]) -> bool:
+    return "ERR_HPO_FINAL_ACTIVITY_NO_PASSING_TRIAL" in _clean_text(
+        payload.get("reason") or payload.get("fail_reason") or payload.get("message")
+    )
+
+
 def _hybrid_child_failure(model_name: Any, failure: Any) -> dict[str, Any]:
     if isinstance(failure, Mapping):
         status = str(failure.get("status") or "failed")
@@ -476,6 +507,8 @@ def _hybrid_child_failure_payload(failure: Mapping[str, Any], *, partial_diagnos
         "rankable_in_unified_table": False,
         "failed_child_model_id": child_model_id,
         "reason": str(failure.get("reason") or failure.get("child_status") or "failed"),
+        "final_activity_passed": False,
+        "final_activity_failure_reason": str(failure.get("reason") or failure.get("child_status") or "failed"),
         "hpo_trials": pd.DataFrame(columns=HPO_TRIAL_COLUMNS),
     }
     if partial_diagnostic:
@@ -685,8 +718,8 @@ def _is_native_hpo_trainable_model(model_name: str) -> bool:
 def _best_hpo_model_payload(payloads: Sequence[Mapping[str, Any]], direction: str) -> dict[str, Any]:
     reverse = str(direction).lower() != "minimize"
     finite_payloads = [item for item in payloads if math.isfinite(float(item.get("best_value", float("nan"))))]
-    rankable_payloads = [item for item in finite_payloads if _hpo_payload_rankable(item)]
-    ordered = sorted(rankable_payloads, key=lambda item: float(item.get("best_value", float("nan"))), reverse=reverse)
+    selectable_payloads = [item for item in finite_payloads if _hpo_payload_activity_selectable(item)]
+    ordered = sorted(selectable_payloads, key=lambda item: float(item.get("best_value", float("nan"))), reverse=reverse)
     if not ordered:
         if finite_payloads:
             raise RuntimeError("ERR_HPO_NO_RANKABLE_COMPLETED_TRIAL")
@@ -695,15 +728,99 @@ def _best_hpo_model_payload(payloads: Sequence[Mapping[str, Any]], direction: st
     return dict(best)
 
 
+def _hpo_payload_activity_selectable(payload: Mapping[str, Any]) -> bool:
+    if str(payload.get("status", "completed")) != "completed":
+        return False
+    if _clean_text(payload.get("final_activity_failure_reason")):
+        return False
+    if _hpo_payload_selection_activity_failure_reason(payload):
+        return False
+    if _otar_promotion_gate_failed(payload):
+        return False
+    return True
+
+
+def _otar_promotion_gate_failed(payload: Mapping[str, Any]) -> bool:
+    ablation_id = _clean_text(payload.get("ablation_id"))
+    if not ablation_id:
+        return False
+    metrics = _mapping(payload.get("metrics"))
+    if not metrics:
+        return False
+
+    if ablation_id == "A3":
+        baseline_metrics = _mapping(payload.get("baseline_metrics", {}))
+        if not baseline_metrics:
+            return False
+        gate_result = _otar_promotion_gate_a3_vs_a2(metrics, baseline_metrics)
+        passed = gate_result.get("passed", False)
+        payload["otar_promotion_passed"] = passed
+        payload["otar_promotion_gate_result"] = gate_result
+        if not passed:
+            payload["otar_promotion_failure_reason"] = "otar_a3_vs_a2_failed"
+        return not passed
+
+    if ablation_id in ("A4", "A4_lite"):
+        baseline_metrics = _mapping(payload.get("baseline_metrics", {}))
+        gate_diagnostics = _mapping(payload.get("gate_diagnostics", {}))
+        if not baseline_metrics:
+            return False
+        gate_result = _otar_promotion_gate_a4_vs_a3(metrics, baseline_metrics, gate_diagnostics)
+        passed = gate_result.get("passed", False)
+        payload["otar_promotion_passed"] = passed
+        payload["otar_promotion_gate_result"] = gate_result
+        if not passed:
+            payload["otar_promotion_failure_reason"] = "otar_a4_vs_a3_failed"
+        return not passed
+
+    return False
+
+
 def _hpo_payload_rankable(payload: Mapping[str, Any]) -> bool:
     if str(payload.get("status", "completed")) != "completed":
         return False
     if _clean_text(payload.get("final_activity_failure_reason")):
         return False
+    if _hpo_payload_selection_activity_failure_reason(payload):
+        return False
     if payload.get("rankable_in_unified_table") is not None and not _truthy(payload.get("rankable_in_unified_table")):
         return False
     diagnostic_status = _clean_text(payload.get("diagnostic_status"))
     return diagnostic_status not in {"partial_diagnostic", "diagnostic_shared_dqn", "activity_diagnostic"}
+
+
+def _hpo_payload_selection_activity_failure_reason(payload: Mapping[str, Any]) -> str:
+    reason = _clean_text(payload.get("selection_activity_failure_reason"))
+    if reason:
+        return reason
+    otar_reason = _clean_text(payload.get("otar_promotion_failure_reason"))
+    if otar_reason:
+        return otar_reason
+    reports = payload.get("hpo_final_reports")
+    if isinstance(reports, Sequence) and not isinstance(reports, (str, bytes)):
+        for report in reports:
+            if not isinstance(report, Mapping):
+                continue
+            if _clean_text(report.get("rank_label")) != "best":
+                continue
+            reason = _clean_text(report.get("selection_activity_failure_reason")) or _clean_text(
+                report.get("activity_failure_reason")
+            )
+            if reason:
+                return reason
+    table = payload.get("hpo_final_reports_table")
+    if isinstance(table, pd.DataFrame) and not table.empty:
+        frame = table
+        if "rank_label" in frame.columns:
+            selected = frame.loc[frame["rank_label"].astype(str).eq("best")]
+            if not selected.empty:
+                frame = selected
+        for column in ("selection_activity_failure_reason", "activity_failure_reason"):
+            if column in frame.columns:
+                reason = _clean_text(frame.iloc[0].get(column))
+                if reason:
+                    return reason
+    return ""
 
 
 def _hpo_model_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -725,6 +842,7 @@ def _hpo_model_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
         "diagnostic_status": payload.get("diagnostic_status"),
         "final_activity_passed": payload.get("final_activity_passed"),
         "final_activity_failure_reason": payload.get("final_activity_failure_reason"),
+        "selection_activity_failure_reason": payload.get("selection_activity_failure_reason"),
     }
 
 
@@ -773,10 +891,16 @@ def _annotate_hpo_final_record(record: Mapping[str, Any], payload: Mapping[str, 
     result.setdefault("hpo_model_name", model_name)
     for key, value in _activity_audit_values(payload, model_name=model_name).items():
         result.setdefault(key, value)
-    failure = _clean_text(payload.get("final_activity_failure_reason"))
+    final_failure = _clean_text(payload.get("final_activity_failure_reason"))
+    selection_failure = _hpo_payload_selection_activity_failure_reason(payload)
+    failure = final_failure or selection_failure
     rankable = _hpo_payload_rankable(payload)
-    result.setdefault("final_activity_passed", failure == "")
-    result.setdefault("final_activity_failure_reason", failure)
+    if selection_failure:
+        result["selection_activity_failure_reason"] = selection_failure
+    result["final_activity_passed"] = failure == ""
+    result["final_activity_failure_reason"] = failure
+    if failure:
+        result["activity_failure_reason"] = failure
     if failure or not rankable:
         result["rankable_in_unified_table"] = False
         result["paper_included"] = False
@@ -1156,10 +1280,9 @@ def _run_hpo_single(experiment: HPOExperiment) -> Mapping[str, Any]:
     if not complete_trials:
         raise RuntimeError(f"ERR_HPO_NO_COMPLETED_TRIAL: {study_name}")
 
-    activity_passed_trials = _activity_passed_hpo_trials(complete_trials)
-    best_trial = _best_hpo_trial(activity_passed_trials, direction)
+    final_reports = _run_hpo_final_reports(experiment, complete_trials, direction, final_split)
+    best_trial = _hpo_final_report_best_trial(final_reports, complete_trials)
     _write_best_trial_config_snapshot(experiment, best_trial, run_dir)
-    final_reports = _run_hpo_final_reports(experiment, activity_passed_trials, direction, final_split)
     final_result = dict(final_reports["best"]["result"])
     if str(final_result.get("status", "unknown")) != "completed":
         raise RuntimeError(f"ERR_HPO_FINAL_RESULT_NOT_COMPLETED: status={final_result.get('status', 'unknown')}")
@@ -1203,16 +1326,20 @@ def _run_hpo_single(experiment: HPOExperiment) -> Mapping[str, Any]:
     )
     _apply_hpo_final_activity_status(payload, config)
     _refresh_new_model_artifacts(payload, config)
+    _write_test_evaluation_manifest(config, payload, run_dir)
     _attach_single_model_hpo_final_outputs(payload)
     return payload
 
 
 def _apply_hpo_final_activity_status(payload: dict[str, Any], config: Mapping[str, Any]) -> None:
     payload.update(_activity_audit_values(payload, model_name=_clean_text(payload.get("hpo_model_name")) or None))
-    failure = _activity_trial_failure_reason(payload, config)
-    payload["final_activity_passed"] = failure is None
+    final_failure = _activity_trial_failure_reason(payload, config)
+    selection_failure = _hpo_payload_selection_activity_failure_reason(payload)
+    failure = final_failure or selection_failure
+    payload["selection_activity_failure_reason"] = selection_failure
+    payload["final_activity_passed"] = failure is None or failure == ""
     payload["final_activity_failure_reason"] = failure or ""
-    if failure is None:
+    if failure is None or failure == "":
         return
     payload["rankable_in_unified_table"] = False
     payload["diagnostic_status"] = "activity_diagnostic"
@@ -1343,11 +1470,20 @@ def main(argv: Sequence[str] | None = None) -> Path:
     mark_run_status("running", registry_path, run_id)
     experiment = None
     try:
-        experiment = registry.create_experiment(config=config, device=device, run_dir=run_dir)
-        if isinstance(experiment, HPOExperiment):
-            result = run_hpo(experiment)
+        if args.formal_matrix or config.get("experiment", {}).get("type") == "otar_formal_matrix":
+            result = run_otar_formal_matrix(
+                config,
+                matrix_path=args.formal_matrix or "configs/paper/otar_formal_matrix.yaml",
+                run_dir=run_dir,
+                max_runs=args.formal_max_runs,
+                device=device,
+            )
         else:
-            result = _result_mapping(experiment.run())
+            experiment = registry.create_experiment(config=config, device=device, run_dir=run_dir)
+            if isinstance(experiment, HPOExperiment):
+                result = run_hpo(experiment)
+            else:
+                result = _result_mapping(experiment.run())
         _apply_orchestration_metadata(result, config)
         _assert_completed_result(result)
         result_path = _write_experiment_outputs(result, run_dir)
@@ -1466,23 +1602,25 @@ def _run_hpo_final_reports(
     direction: str,
     final_split: str,
 ) -> dict[str, dict[str, Any]]:
-    selected = _selected_hpo_report_trials(complete_trials, direction)
+    ordered_trials = _ordered_activity_passed_hpo_trials(complete_trials, direction)
+    allow_activity_failed_fallback = not any(
+        not _hpo_trial_activity_failure_reason(trial)
+        for trial in complete_trials
+    )
     cache: dict[int, dict[str, Any]] = {}
     reports: dict[str, dict[str, Any]] = {}
     previous_label = getattr(experiment, "final_test_label", None)
     had_previous_label = hasattr(experiment, "final_test_label")
     try:
-        for label, trial in selected.items():
-            trial_number = int(getattr(trial, "number", -1))
-            if trial_number not in cache:
-                setattr(experiment, "final_test_label", f"final_test_{label}")
-                cache[trial_number] = _result_mapping(_run_hpo_final_test(experiment, trial, final_split))
-            reports[label] = {
-                "trial_number": trial_number,
-                "validation_value": getattr(trial, "value", None),
-                "params": dict(getattr(trial, "params", {})),
-                "result": cache[trial_number],
-            }
+        for label in ("best", "median", "worst"):
+            reports[label] = _select_hpo_final_report(
+                experiment,
+                label=label,
+                candidates=_hpo_final_report_candidates(ordered_trials, label),
+                final_split=final_split,
+                cache=cache,
+                allow_activity_failed_fallback=allow_activity_failed_fallback,
+            )
     finally:
         if had_previous_label:
             setattr(experiment, "final_test_label", previous_label)
@@ -1491,17 +1629,91 @@ def _run_hpo_final_reports(
     return reports
 
 
-def _selected_hpo_report_trials(complete_trials: Sequence[Any], direction: str) -> dict[str, Any]:
+def _select_hpo_final_report(
+    experiment: HPOExperiment,
+    *,
+    label: str,
+    candidates: Sequence[Any],
+    final_split: str,
+    cache: dict[int, dict[str, Any]],
+    allow_activity_failed_fallback: bool,
+) -> dict[str, Any]:
+    fallback: dict[str, Any] | None = None
+    failure_reasons: list[str] = []
+    for trial in candidates:
+        trial_number = int(getattr(trial, "number", -1))
+        if trial_number not in cache:
+            setattr(experiment, "final_test_label", f"final_test_{label}")
+            cache[trial_number] = _result_mapping(_run_hpo_final_test(experiment, trial, final_split))
+        selection_activity_failure = _hpo_trial_activity_failure_reason(trial)
+        report = {
+            "trial_number": trial_number,
+            "validation_value": getattr(trial, "value", None),
+            "params": dict(getattr(trial, "params", {})),
+            "result": cache[trial_number],
+            "selection_activity_failure_reason": selection_activity_failure,
+        }
+        if selection_activity_failure:
+            report["activity_failure_reason"] = selection_activity_failure
+        if fallback is None:
+            fallback = report
+        activity_failure = _activity_trial_failure_reason(cache[trial_number], experiment.config)
+        report["final_activity_failure_reason"] = activity_failure or ""
+        if activity_failure is None and (not selection_activity_failure or allow_activity_failed_fallback):
+            return report
+        failure_reasons.append(str(activity_failure or selection_activity_failure or "unknown"))
+    if fallback is None:
+        raise RuntimeError("ERR_HPO_NO_COMPLETED_TRIAL")
+    if not allow_activity_failed_fallback:
+        reasons = ",".join(sorted(set(failure_reasons))) or "unknown"
+        raise RuntimeError(f"ERR_HPO_FINAL_ACTIVITY_NO_PASSING_TRIAL: label={label} reasons={reasons}")
+    return fallback
+
+
+def _hpo_final_report_candidates(ordered_trials: Sequence[Any], label: str) -> list[Any]:
+    trials = list(ordered_trials)
+    if label == "best":
+        return trials
+    if label == "worst":
+        return list(reversed(trials))
+    median_index = len(trials) // 2
+    indices = [median_index]
+    for offset in range(1, len(trials)):
+        left = median_index - offset
+        right = median_index + offset
+        if left >= 0:
+            indices.append(left)
+        if right < len(trials):
+            indices.append(right)
+    return [trials[index] for index in indices if 0 <= index < len(trials)]
+
+
+def _ordered_activity_passed_hpo_trials(complete_trials: Sequence[Any], direction: str) -> list[Any]:
     reverse = str(direction).lower() != "minimize"
     ordered = sorted(_activity_passed_hpo_trials(complete_trials), key=lambda trial: float(trial.value), reverse=reverse)
     if not ordered:
         raise RuntimeError("ERR_HPO_NO_COMPLETED_TRIAL")
+    return ordered
+
+
+def _selected_hpo_report_trials(complete_trials: Sequence[Any], direction: str) -> dict[str, Any]:
+    ordered = _ordered_activity_passed_hpo_trials(complete_trials, direction)
     median_index = len(ordered) // 2
     return {
         "best": ordered[0],
         "median": ordered[median_index],
         "worst": ordered[-1],
     }
+
+
+def _hpo_final_report_best_trial(final_reports: Mapping[str, Mapping[str, Any]], complete_trials: Sequence[Any]) -> Any:
+    best_report = _mapping(final_reports.get("best"))
+    best_trial_number = int(best_report.get("trial_number"))
+    trial_by_number = {int(getattr(trial, "number", -1)): trial for trial in _activity_passed_hpo_trials(complete_trials)}
+    best_trial = trial_by_number.get(best_trial_number)
+    if best_trial is None:
+        raise RuntimeError(f"ERR_HPO_BEST_TRIAL_NOT_FOUND: trial_number={best_trial_number}")
+    return best_trial
 
 
 def _hpo_final_report_summaries(final_reports: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -1513,6 +1725,9 @@ def _hpo_final_report_summaries(final_reports: Mapping[str, Mapping[str, Any]]) 
                 "trial_number": report.get("trial_number"),
                 "validation_value": report.get("validation_value"),
                 "params": report.get("params", {}),
+                "selection_activity_failure_reason": report.get("selection_activity_failure_reason", ""),
+                "activity_failure_reason": report.get("activity_failure_reason", ""),
+                "final_activity_failure_reason": report.get("final_activity_failure_reason", ""),
                 "result": _result_summary(_result_mapping(report.get("result", {}))),
             }
         )
@@ -1552,9 +1767,18 @@ def _hpo_final_report_table(
         )
         row.update(_hpo_final_report_metric_values(result, model_name=model_name))
         row.update(_activity_audit_values(result, model_name=model_name))
-        activity_failure = _activity_trial_failure_reason(result, config) if config is not None else None
-        row["final_activity_passed"] = activity_failure is None
+        selection_activity_failure = _clean_text(report.get("selection_activity_failure_reason"))
+        final_activity_failure = _activity_trial_failure_reason(result, config) if config is not None else None
+        activity_failure = final_activity_failure or selection_activity_failure
+        row["selection_activity_failure_reason"] = selection_activity_failure
+        row["final_activity_passed"] = activity_failure is None or activity_failure == ""
         row["final_activity_failure_reason"] = activity_failure or ""
+        if activity_failure:
+            row["activity_failure_reason"] = activity_failure
+            row["rankable_in_unified_table"] = False
+            row["paper_included"] = False
+            row["diagnostic_status"] = "activity_diagnostic"
+            row["reason"] = activity_failure
         rows.append(row)
     return _order_hpo_final_report_columns(pd.DataFrame(rows))
 
@@ -1590,6 +1814,17 @@ def _hpo_final_report_summary_table(
             evaluated_checkpoint_path=result.get("evaluated_checkpoint_path"),
         )
         row.update(_hpo_final_report_metric_values(result, model_name=model_name))
+        selection_activity_failure = _clean_text(summary.get("selection_activity_failure_reason"))
+        activity_failure = _clean_text(summary.get("final_activity_failure_reason")) or selection_activity_failure
+        row["selection_activity_failure_reason"] = selection_activity_failure
+        row["final_activity_passed"] = activity_failure == ""
+        row["final_activity_failure_reason"] = activity_failure
+        if activity_failure:
+            row["activity_failure_reason"] = activity_failure
+            row["rankable_in_unified_table"] = False
+            row["paper_included"] = False
+            row["diagnostic_status"] = "activity_diagnostic"
+            row["reason"] = activity_failure
         rows.append(row)
     return _order_hpo_final_report_columns(pd.DataFrame(rows))
 
@@ -1789,6 +2024,7 @@ def _write_hpo_search_space_manifest(
 
 
 def _hpo_search_space_manifest_rows(config: Mapping[str, Any], model_names: Sequence[str]) -> list[dict[str, Any]]:
+    config = _merge_otar_hpo_grid_sources(config)
     hpo_config = _mapping(config.get("hpo"))
     search_space = _mapping(hpo_config.get("search_space"))
     models = _dedupe_strings(model_names)
@@ -1802,7 +2038,7 @@ def _hpo_search_space_manifest_rows(config: Mapping[str, Any], model_names: Sequ
             model_specific = isinstance(model_scope, Sequence) and not isinstance(model_scope, (str, bytes))
             if model_specific and str(model_name) not in {str(item) for item in model_scope}:
                 continue
-            choices = spec.get("choices")
+            choices = spec.get("choices", spec.get("values", spec.get("candidate_values")))
             rows.append(
                 {
                     "model_name": str(model_name),
@@ -1834,7 +2070,114 @@ def _write_best_trial_config_snapshot(experiment: HPOExperiment, best_trial: Any
     hpo_config["best_trial_number"] = best_trial.number
     hpo_config["best_params"] = dict(best_trial.params)
     config["hpo"] = hpo_config
-    return save_yaml_atomic(config, run_dir / "logs" / "config_snapshot.yaml")
+
+    best_params = dict(best_trial.params)
+    ppo_config = dict(config.get("ppo", {}))
+    if "entropy_coef" in best_params and "entropy_coef" not in ppo_config:
+        ppo_config["entropy_coef"] = best_params["entropy_coef"]
+    if ppo_config:
+        config["ppo"] = ppo_config
+
+    return save_yaml_atomic(config, run_dir / "logs" / "selected_config.yaml")
+
+
+def _get_code_commit_hash() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _get_universe_manifest_hash(data_config: Mapping[str, Any]) -> str:
+    import hashlib
+
+    manifest_path = data_config.get("universe_selection_manifest_path")
+    if manifest_path is None:
+        manifest_path = data_config.get("download_manifest_path")
+    if manifest_path is None:
+        return ""
+    path = (PROJECT_ROOT / str(manifest_path)).resolve()
+    if not path.exists():
+        return ""
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except Exception:
+        return ""
+
+
+def _get_package_versions() -> dict[str, str]:
+    versions: dict[str, str] = {}
+    try:
+        for dist in importlib.metadata.distributions():
+            name = dist.metadata.get("Name", "")
+            version = dist.metadata.get("Version", "")
+            if name:
+                versions[str(name)] = str(version)
+    except Exception:
+        pass
+    return versions
+
+
+def _get_split_dates(config: Mapping[str, Any]) -> dict[str, Any]:
+    split_config = config.get("split", {})
+    if isinstance(split_config, Mapping):
+        return dict(split_config)
+    return {}
+
+
+def _get_selected_model_checkpoint(result: Mapping[str, Any] | None) -> str:
+    if result is None:
+        return ""
+    return str(result.get("evaluated_checkpoint_path", result.get("best_checkpoint_path", "")))
+
+
+def _get_v_init_resolved_value(config: Mapping[str, Any], result: Mapping[str, Any] | None) -> float | None:
+    reward_config = config.get("reward", {})
+    if not isinstance(reward_config, Mapping):
+        return None
+    v_init_source = str(reward_config.get("v_init_source", "fixed"))
+    if v_init_source == "fixed":
+        return float(reward_config.get("v_init", 0.0))
+    if result is not None:
+        v_init = result.get("v_init_resolved_value")
+        if v_init is not None:
+            return float(v_init)
+    return None
+
+
+def _write_test_evaluation_manifest(
+    config: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    run_dir: Path,
+) -> Path:
+    data_config = config.get("data", {}) if isinstance(config.get("data"), Mapping) else {}
+    training_config = config.get("training", {}) if isinstance(config.get("training"), Mapping) else {}
+    split_dates = _get_split_dates(config)
+
+    manifest = {
+        "config_hash": config.get("config_hash"),
+        "code_commit_hash": _get_code_commit_hash(),
+        "data_hash": _data_hash(config),
+        "universe_manifest_hash": _get_universe_manifest_hash(data_config),
+        "split_dates": split_dates,
+        "random_seed": training_config.get("seed"),
+        "best_trial_number": payload.get("best_trial_number"),
+        "best_value": payload.get("best_value"),
+        "best_params": payload.get("best_params"),
+        "evaluated_checkpoint_path": payload.get("evaluated_checkpoint_path"),
+        "final_report_split": payload.get("final_report_split"),
+        "ablation_id": (config.get("experiment", {}) or {}).get("ablation_id", ""),
+    }
+    return save_json_atomic(manifest, run_dir / "logs" / "test_evaluation_manifest.json")
 
 
 def _write_run_manifest(
@@ -1856,13 +2199,26 @@ def _write_run_manifest(
     data_mode = data_config.get("data_mode") or (
         "strict_common_history" if data_config.get("strict_common_history_mode") is True else "availability_mask"
     )
+    experiment_config = config.get("experiment", {}) if isinstance(config.get("experiment"), Mapping) else {}
+    training_config = config.get("training", {}) if isinstance(config.get("training"), Mapping) else {}
+    cost_model_config = config.get("cost_model", {}) if isinstance(config.get("cost_model"), Mapping) else {}
+
     manifest = {
         "run_id": config["output"]["run_name"],
         "status": status,
         "experiment_type": getattr(experiment, "experiment_type", config["experiment"]["type"]),
         "output_name": getattr(experiment, "output_name", None),
+        "ablation_id": experiment_config.get("ablation_id", ""),
         "config_hash": config.get("config_hash"),
+        "code_commit_hash": _get_code_commit_hash(),
         "data_hash": _data_hash(config),
+        "universe_manifest_hash": _get_universe_manifest_hash(data_config),
+        "random_seed": training_config.get("seed"),
+        "package_versions": _get_package_versions(),
+        "split_dates": _get_split_dates(config),
+        "transaction_cost_setting": dict(cost_model_config) if cost_model_config else None,
+        "selected_model_checkpoint": _get_selected_model_checkpoint(result),
+        "v_init_resolved_value": _get_v_init_resolved_value(config, result),
         "execution_model": dict(execution_model),
         "data_governance": dict(data_governance),
         "portfolio_initial_nav": float(portfolio.get("initial_nav", 1.0)),

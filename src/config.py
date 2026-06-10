@@ -86,6 +86,7 @@ VALID_EXPERIMENT_TYPES = {
     "partial_rebalance_analysis",
     "full_reproduction",
 }
+FORMAL_MATRIX_EXPERIMENT_TYPES = {"otar_formal_matrix"}
 OPEN_MAPPING_PATHS = {
     "constraints.asset_class_mapping",
     "hpo.search_space",
@@ -154,6 +155,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "train_ratio": 0.70,
         "validation_ratio": 0.15,
         "test_ratio": 0.15,
+        "train_start": None,
+        "train_end": None,
+        "validation_start": None,
+        "validation_end": None,
+        "test_start": None,
+        "test_end": None,
         "walk_forward": {
             "train_years": 3,
             "validation_months": 6,
@@ -203,6 +210,22 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "turnover_penalty_enabled": True,
         "cvar_confidence": 0.95,
         "differential_sharpe_window": 60,
+        "confidence_q": 0.95,
+        "tail_alpha": None,
+        "lambda_tail": 0.10,
+        "lambda_dd": 0.20,
+        "lambda_turnover": 0.001,
+        "tau": 0.005,
+        "tau_v": 0.005,
+        "eta_v": 0.00005,
+        "v_init": 0.0,
+        "v_clip_min": -0.10,
+        "v_clip_max": 0.20,
+        "v_update_mode": "smooth_robbins_monro",
+        "v_init_source": "fixed",
+        "v_init_warmup_days": 60,
+        "v_init_confidence_q": 0.95,
+        "reward_cost_accounting_abs_tol": 1.0e-10,
     },
     "reward_ablation": {
         "enabled": False,
@@ -683,6 +706,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "experiment": {
         "type": "main_model",
+        "ablation_id": "",
     },
     "full_reproduction": {
         "resume_completed_children": False,
@@ -895,6 +919,7 @@ class ConfigLoader:
             raise ConfigError("ERR_CONFIG_INVALID_TYPE", "config", "config root must be a mapping")
 
         loaded = cls._normalize_loaded_aliases(loaded)
+        loaded = cls._wrap_protocol_only_paper_config(loaded)
         resolved = cls._merge_defaults(DEFAULT_CONFIG, loaded, "")
         cls._apply_cli_overrides(resolved, cli_overrides)
         cls._normalize_runtime_aliases(resolved)
@@ -1010,7 +1035,7 @@ class ConfigLoader:
     @classmethod
     def validate_experiment(cls, config: dict[str, Any]) -> None:
         experiment_type = config["experiment"]["type"]
-        if experiment_type not in VALID_EXPERIMENT_TYPES:
+        if experiment_type not in VALID_EXPERIMENT_TYPES and experiment_type not in FORMAL_MATRIX_EXPERIMENT_TYPES:
             raise ConfigError(
                 "ERR_CONFIG_INVALID_EXPERIMENT_TYPE",
                 "experiment.type",
@@ -1063,6 +1088,19 @@ class ConfigLoader:
             _move_alias_value(dqn, canonical="n_step", alias="n_steps", key_path="dqn")
             _move_alias_value(dqn, canonical="per_enabled", alias="use_prioritized_replay", key_path="dqn")
         return result
+
+    @classmethod
+    def _wrap_protocol_only_paper_config(cls, loaded: Mapping[str, Any]) -> dict[str, Any]:
+        if "experiment" in loaded:
+            return deepcopy(dict(loaded))
+        protocol_id = loaded.get("protocol_id")
+        if protocol_id is None:
+            return deepcopy(dict(loaded))
+        return {
+            "experiment": {"type": "main_model"},
+            "protocol": {"protocol_id": str(protocol_id)},
+            "training": {"checkpoint_include_replay_buffer": False},
+        }
 
     @classmethod
     def _normalize_runtime_aliases(cls, config: dict[str, Any]) -> None:

@@ -538,6 +538,9 @@ def test_paper_aggregate_generates_main_stats_and_seed_summary(tmp_path):
         "source_run_dirs",
         "diagnostic_status",
         "paper_aggregate_manifest",
+        "otar_gate_diagnostics",
+        "otar_tail_calibration",
+        "otar_training_stability",
     }
     assert "n_unique_return_series" in set(seed_summary.columns)
     assert "avg_turnover" in set(turnover_activity.columns)
